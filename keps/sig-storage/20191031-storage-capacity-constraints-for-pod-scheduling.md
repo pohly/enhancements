@@ -111,7 +111,7 @@ volumes.
 
 For persistent volumes, capacity will be tracked per storage class, so
 additional parameters in a storage class are taken into account. This
-important because those parameters might have a significant impact on
+is important because those parameters might have a significant impact on
 how much space a new volume actually needs in the underlying storage
 system (for example, an LVM volume with mirroring needs more space
 than a LVM volume that is striped). For ephemeral volumes there is no
