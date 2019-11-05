@@ -2,6 +2,7 @@
 title: Storage Capacity Constraints for Pod Scheduling
 authors:
   - "@pohly"
+  - "@cofyc"
 owning-sig: sig-storage
 participating-sigs:
   - sig-scheduling
