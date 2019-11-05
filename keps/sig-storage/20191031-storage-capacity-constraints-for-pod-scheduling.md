@@ -207,36 +207,48 @@ The prefix “CSI” is used to avoid confusion with other types that have
 a similar name and because some aspects are specific to CSI.
 
 ```
-// CSIDriverCapacity represents information about storage capacity that is available
-// via a certain CSI driver. Like CSIDriverInfo, the name of the CSIDriverCapacity
+// CSIStorageInfo represents information about storage provided by a certain CSI driver,
+// like for example current capacity. As in CSIDriverInfo, the name of the CSIStorageInfo
 // objects is the same as the driver name. Unlike CSIDriverInfo, these objects are
 // created dynamically and get updated regularly when there are changes.
-type CSIDriverCapacity struct {
+type CSIStorageInfo struct {
     metav1.TypeMeta
     metav1.ObjectMeta
 
-   // Capacity contains the current capacity available via the driver for each
-   // storage class that uses the driver. The empty class name is
-   // valid and is used for ephemeral inline volumes.
-   Capacity: map[string]CSITopologyCapacity
+   // The actual information may depend on the storage class and therefore
+   // is provided separately for each storage class that uses the driver.
+   // The empty class name is valid and represents information relevant for
+   // ephemeral inline volumes as those don't use storage classes.
+   Info: map[string]CSIStorageClassInfo
 }
 
-// CSITopologyCapacity lists capacity for different segments.
-type CSITopologyCapacity struct {
-    Segments []CSISegmentCapacity
+// CSIStorageClassInfo contains information for one particular storage class
+// of a CSI driver.
+type CSIStorageClassInfo struct {
+    // A CSI driver may allocate storage from one or more pools with different
+    // attributes.
+    Pools []CSIStoragePoolInfo
 }
 
-// CSISegmentCapacity identifies a segment
-// with a NodeSelector and stores the corresponding capacity.
-type CSISegmentCapacity struct {
-    // Segment identifies all nodes for which the capacity is the same.
-    Segment v1.NodeSelector
+// CSIStoragePoolInfo identifies one particular storage pool
+// and stores the corresponding attributes.
+type CSIStoragePoolInfo struct {
+    // NodeTopology can be used to describe a storage pool that is available
+    // only for certain nodes in the cluster. If not set, the pool is consider
+    // to be available from all nodes.
+    // +optional
+    NodeTopology *v1.NodeSelector
+
     // Capacity is the size of the largest volume that currently can
     // be created. This is a best-effort guess and even volumes
     // of that size might not get created successfully.
-    Capacity resource.Quantity
+    // +optional
+    Capacity *resource.Quantity
+
     // ExpiryTime is the absolute time at which this entry becomes obsolete.
-    ExpiryTime: metav1.Time
+    // When not set, the entry is valid forever.
+    // +optional
+    ExpiryTime: *metav1.Time
 }
 ```
 
@@ -288,16 +300,16 @@ ephemeral volumes currently don’t need that and thus get deployed
 without it. For the sake of avoiding yet another sidecar, the proposal
 is to extend the external-provisioner such that it can be deployed
 alongside a CSI node service on each node and then just handles
-CSIDriverCapacity creation and updating. This leads to different mode
+`CSIStorageInfo` creation and updating. This leads to different mode
 of operations:
 
 #### Only inline ephemeral volumes
 
 In this mode, multiple different external-provisioner instances run in
 the cluster and collaboratively need to update
-CSIDriverCapacity. CSICapacity just has one entry with the empty
+`CSIStorageInfo`. CSICapacity just has one entry with the empty
 storage class name. Each external-provisioner is responsible for one
-CSITopologyCapacity entry with a node selector that matches the node
+`CSIStorageClassInfo` entry with a node selector that matches the node
 name.
 
 A CSI driver using this mode has to implement the CSI controller
@@ -305,7 +317,7 @@ service and the GetCapacity call, which will be called with empty
 GetCapacityRequest (no capabilities, no parameters, no topology).
 
 This mode of operation is expected to be used by drivers that really
-need to track capacity per node; in that case, CSITopologyCapacity has
+need to track capacity per node; in that case, `CSIStorageClassInfo` has
 to grow linearly with the number of nodes where the driver runs.
 
 #### Central provisioning
@@ -341,7 +353,7 @@ information for ephemeral inline volumes is gathered through the CSI
 controller service and is assumed to be specific to the same topology
 segments as normal volumes.
 
-CSIDriverCapacity then must be updated:
+`CSIStorageInfo` then must be updated:
 - when nodes change
 - when volumes were created or deleted
 - periodically, to detect changes in the underlying backing store; a
@@ -364,9 +376,9 @@ only necessary for PVCs that have not been bound yet and for inline
 volumes.
 
 It can be done initially with a brute-force evaluation of each
-NodeSelector in the CSITopologyCapacity for the driver and storage
+`NodeSelector` in the `CSIStorageClassInfo` for the driver and storage
 class of the PVC or later by maintaining an in-memory map from node
-name to CSISegmentCapacity. The same code that maintains that map can
+name to `CSIStoragePoolInfo`. The same code that maintains that map can
 also deal with removing expired entries.
 
 ### Risks and Mitigations
