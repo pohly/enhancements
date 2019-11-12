@@ -47,6 +47,8 @@ see-also:
 - [Implementation History](#implementation-history)
 - [Drawbacks](#drawbacks)
 - [Alternatives](#alternatives)
+  - [Separate objects](#separate-objects)
+  - [Prior work](#prior-work)
 <!-- /toc -->
 
 ## Release Signoff Checklist
@@ -169,33 +171,25 @@ enough of it is available on a node before assigning a pod to it.
 
 CSI defines the GetCapacity RPC call for the controller service to
 report information about the current capacity but it's not accessible
-in the Kubernetes scheduler. A new API type which represents capacity
-is introduced to solve this (details below).
+in the Kubernetes scheduler. The existing `CSIDriver` type gets
+extended with a `Status` field that (initially) only holds the
+capacity information in a format that is sufficiently flexible to
+handle the use cases outlined above. In the future, that `Status`
+field could also be extended to represent other dynamic information
+about the driver.
 
-The CSI driver deployment is responsible for creating and updating
-objects of that type. The external-provisioner gets extended to handle
-this, so CSI drivers only need to implement the GetCapacity call. Each
-capacity value has a lifetime chosen by the creator. Removal of
-expired values is left to the Kubernetes scheduler. This avoids the
-issue that two different processes both try the same operation, which
-would be redundant work. Making the Kubernetes scheduler responsible
-for this has the advantage that it also works when the driver crashes
-or gets de-installed.
+The CSI driver deployment is already responsible for creating a
+`CSIDriver` object for itself. Now it will also have to enable and
+configure the adding, updating and removing of capacity
+information. To simplify that, the `external-provisioner` will be
+extended to handle this based on the already existing APIs (i.e. no
+changes needed in a CSI driver itself).
 
-The Kubernetes scheduler monitors those objects and uses that
+The Kubernetes scheduler monitors `CSIDriver` objects and uses that
 information when it comes to making scheduling decisions. If the
-scheduler has no current capacity information, it proceeds without it,
-so nothing changes for CSI driver deployments that do not support
-capacity tracking.
-
-This is a problem for deployments that do support it, but haven’t been
-able to provide the necessary information yet. TODO: extend
-CSIDriverInfo with a field that tells the scheduler to retry later
-when information is missing? Avoid the situation by (Somehow? How?!)
-always providing the information before registering the driver -
-probably doesn’t work for PVCs with late binding because the pod gets
-scheduled even if the driver isn’t installed (which also is a problem
-for the CSIDriverInfo approach…).
+driver does not indicate that it supports capacity reporting, then the
+scheduler proceeds just as it does now, so nothing changes for
+existing CSI driver deployments.
 
 ### API
 
@@ -208,54 +202,121 @@ The prefix “CSI” is used to avoid confusion with other types that have
 a similar name and because some aspects are specific to CSI.
 
 ```
-// CSIStorageInfo represents information about storage provided by a certain CSI driver,
-// like for example current capacity. As in CSIDriverInfo, the name of the CSIStorageInfo
-// objects is the same as the driver name. Unlike CSIDriverInfo, these objects are
-// created dynamically and get updated regularly when there are changes.
-type CSIStorageInfo struct {
-    metav1.TypeMeta
-    metav1.ObjectMeta
+type CSIDriver struct {
+    ...
 
-   // The actual information may depend on the storage class and therefore
-   // is provided separately for each storage class that uses the driver.
-   // The empty class name is valid and represents information relevant for
-   // ephemeral inline volumes as those don't use storage classes.
-   Info: map[string]CSIStorageClassInfo
+	// Specification of the CSI Driver.
+	Spec CSIDriverSpec `json:"spec" protobuf:"bytes,2,opt,name=spec"`
+
+	// Status of the CSI Driver.
+	// +optional
+	Status CSIDriverStatus `json:"status,omitempty" protobuf:"bytes,3,opt,name=status"`
 }
 
-// CSIStorageClassInfo contains information for one particular storage class
-// of a CSI driver.
-type CSIStorageClassInfo struct {
-    // A CSI driver may allocate storage from one or more pools with different
-    // attributes.
-    Pools []CSIStoragePoolInfo
+type CSIDriverSpec struct {
+    ...
+
+	// CapacityTracking defines whether the driver deployment will provide
+	// capacity information as part of the driver status.
+	// +optional
+	CapacityTracking *bool `json:"capacityTracking,omitempty" protobuf:"bytes,4,opt,name=capacityTracking"`
 }
 
-// CSIStoragePoolInfo identifies one particular storage pool
-// and stores the corresponding attributes.
-type CSIStoragePoolInfo struct {
-    // NodeTopology can be used to describe a storage pool that is available
-    // only for certain nodes in the cluster. If not set, the pool is consider
-    // to be available from all nodes.
-    // +optional
-    NodeTopology *v1.NodeSelector
+// CSIDriverStatus represents dynamic information about the driver and
+// the storage provided by it, like for example current capacity.
+type CSIDriverStatus struct {
+	// Each driver can provide different kinds of storage.
+	// +patchMergeKey=storageClassName
+	// +patchStrategy=merge
+	// +listType=map
+	// +listMapKey=storageClassName
+	// +optional
+	Storage []CSIStorage `patchStrategy:"merge" patchMergeKey:"storageClassName" json:"storage,omitempty" protobuf:"bytes,1,opt,name=storage"`
+}
 
-    // Capacity is the size of the largest volume that currently can
-    // be created. This is a best-effort guess and even volumes
-    // of that size might not get created successfully.
-    // +optional
-    Capacity *resource.Quantity
+// CSIStorage contains information for one particular kind of storage
+// provided by a CSI driver.
+type CSIStorage struct {
+	// The storage class name matches the name of some actual
+	// `StorageClass`, in which case the information applies when
+	// using that storage class for a volume. There are also two
+	// special names:
+	// - <ephemeral> for storage used by ephemeral inline volumes (which
+	//   don't use a storage class)
+	// - <fallback> for storage that is the same regardless of the storage class;
+	//   it is applicable if there is no other, more specific entry
+	StorageClassName string `json:"storageClassName" protobuf:"bytes,1,name=storageClassName"`
 
-    // ExpiryTime is the absolute time at which this entry becomes obsolete.
-    // When not set, the entry is valid forever.
-    // +optional
-    ExpiryTime: *metav1.Time
+	// A CSI driver may allocate storage from one or more pools
+	// with different attributes. The entries must have names that
+	// are unique inside this list.
+	//
+	// +patchMergeKey=name
+	// +patchStrategy=merge
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	Pools []CSIStoragePool `patchStrategy:"merge" patchMergeKey:"name" json:"pools,omitempty" protobuf:"bytes,2,opt,name=pools"`
+}
+
+const (
+	// FallbackStorageClassName is used for a CSIStorage element which
+	// applies when there isn't a more specific element for the
+	// current storage class or ephemeral volume.
+	FallbackStorageClassName = "<fallback>"
+
+	// EphemeralStorageClassName is used for storage from which
+	// ephemeral volumes are allocated.
+	EphemeralStorageClassName = "<ephemeral>"
+)
+
+// CSIStoragePoolInfo identifies one particular storage pool and
+// stores the corresponding attributes.
+//
+// A pool might only be accessible from a subset of the nodes in the
+// cluster. That subset can be identified either via NodeTopology or
+// NodeList, but not both. If neither is set, the pool is assumed
+// to be available in the entire cluster.
+type CSIStoragePool struct {
+	// The name is some user-friendly identifier for this entry.
+	Name string `json:"name" protobuf:"bytes,1,name=name"`
+
+	// NodeTopology can be used to describe a storage pool that is available
+	// only for nodes matching certain criteria.
+	// +optional
+	NodeTopology *v1.NodeSelector `json:"nodeTopology,omitempty" protobuf:"bytes,2,opt,name=nodeTopology"`
+
+	// NodeList can be used to describe a storage pool that is available
+	// only for certain nodes in the cluster.
+    //
+    // +listType=set
+	// +optional
+	NodeList []string `json:"nodeList,omitempty" protobuf:"bytes,3,opt,name=nodeList"`
+
+	// Capacity is the size of the largest volume that currently can
+	// be created. This is a best-effort guess and even volumes
+	// of that size might not get created successfully.
+	// +optional
+	Capacity *resource.Quantity `json:"capacity,omitempty" protobuf:"bytes,4,opt,name=capacity"`
+
+	// ExpiryTime is the absolute time at which this entry becomes obsolete.
+	// When not set, the entry is valid forever.
+	ExpiryTime *metav1.Time `json:"expiryTime,omitempty" protobuf:"bytes,5,opt,name=expiryTime"`
 }
 ```
 
-How the NodeSelector is composed is not defined by the API and may
-change over time. How the external-provisioner handles this is
-explained in the next section.
+This API is designed so that updating a `CSIStoragePool` can be done
+with a `PATCH` operation. This way, individual writers can send
+updates without having to get the latest full `CSIDriver` object and
+there is no risk of conflicts due to concurrent writes.
+
+Removing obsolete information when uninstalling a driver is simple
+because it is part of the usual `CSIDriver` removal.
+
+How the availability of the `CSIStoragePool` within the cluster is
+defined is up to the CSI driver. This may get extended in the future
+to also cover other use cases, like reporting the capacity of
+individual disks inside a node.
 
 #### Size of ephemeral inline volumes
 
@@ -308,17 +369,17 @@ of operations:
 
 In this mode, multiple different external-provisioner instances run in
 the cluster and collaboratively need to update
-`CSIStorageInfo`. CSICapacity just has one entry with the empty
-storage class name. Each external-provisioner is responsible for one
-`CSIStorageClassInfo` entry with a node selector that matches the node
-name.
+`CSIDriver.Status`. There is a single `CSIStorage` with one pool per
+node.  Each external-provisioner is responsible for one
+`CSIStoragePool` entry with a `NodeList` that picks the node on which
+the driver and the external-provisioner run.
 
 A CSI driver using this mode has to implement the CSI controller
-service and the GetCapacity call, which will be called with empty
-GetCapacityRequest (no capabilities, no parameters, no topology).
+service and its `GetCapacity` call, which will be called with empty
+`GetCapacityRequest` (no capabilities, no parameters, no topology).
 
 This mode of operation is expected to be used by drivers that really
-need to track capacity per node; in that case, `CSIStorageClassInfo` has
+need to track capacity per node; in that case, `CSIStorage` has
 to grow linearly with the number of nodes where the driver runs.
 
 #### Central provisioning
@@ -339,22 +400,23 @@ Without that parameter, external-provisioner does not create capacity
 information.
 
 With that parameter, it can reconstruct topology segments as follows:
-For each node, find the labels with that prefix and combine them into
-a Topology instance.  Remove duplicates.
+- For each node, find the labels with that prefix and combine them
+  into a `csi.Topology` instance.
+- Remove duplicates.
 
 Then for each storage class that uses the driver and for each of the
-topology segments it calls GetCapacity, with parameters from the
+topology segments it calls `GetCapacity`, with parameters from the
 storage class and the topology segment as
 `GetCapacityRequest.accessible_topology`.
 
 Optionally, enabled by another command line parameter, it also does
-the same without parameters and stores those results in CSICapacity
-with the empty storage class name. In other words, capacity
+the same without parameters and stores those results in a `CSIStorage`
+with `StorageClassName` = `<ephemeral>`. In other words, capacity
 information for ephemeral inline volumes is gathered through the CSI
 controller service and is assumed to be specific to the same topology
 segments as normal volumes.
 
-`CSIStorageInfo` then must be updated:
+`CSIDriver.Status` then must be updated:
 - when nodes change
 - when volumes were created or deleted
 - periodically, to detect changes in the underlying backing store; a
@@ -376,11 +438,11 @@ into a topology segment that has enough capacity left. This check is
 only necessary for PVCs that have not been bound yet and for inline
 volumes.
 
-It can be done initially with a brute-force evaluation of each
-`NodeSelector` in the `CSIStorageClassInfo` for the driver and storage
-class of the PVC or later by maintaining an in-memory map from node
-name to `CSIStoragePoolInfo`. The same code that maintains that map can
-also deal with removing expired entries.
+The lookup sequence will be:
+- find the `CSIDriver` object for the driver
+- find a `CSIStorage` object based on the volume attributes
+  (storage class vs. ephemeral)
+- find all pools that are accessible and have sufficient capacity left
 
 ### Risks and Mitigations
 
@@ -408,8 +470,24 @@ Why should this KEP _not_ be implemented - TBD.
 
 ## Alternatives
 
+### Separate objects
+
+The proposed `CSIDriver.Status` combines all information in one object
+in a way that is both human-readable and matches the lookup pattern of
+the controller.
+
+Alternatively, `CSIStoragePool` could also be its own type, with
+multiple independent objects. But then each object would have to have
+a copy of the driver and storage class name and both the number of
+object as well as the total amount of data in etcd increases.
+
+Naming those objects will become harder and most likely wouldn't be
+useful to a human (UUID or hash of its attributes). Removing those
+objects becomes harder.
+
+### Prior work
+
 The [Topology-aware storage dynamic
 provisioning](https://docs.google.com/document/d/1WtX2lRJjZ03RBdzQIZY3IOvmoYiF5JxDX35-SsCIAfg)
 design document used a different data structure and had not fully
 explored how that data structure would be populated and used.
-
