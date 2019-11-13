@@ -34,6 +34,9 @@ see-also:
   - [Caching remaining capacity via the API server](#caching-remaining-capacity-via-the-api-server)
   - [API](#api)
     - [Storage capacity](#storage-capacity)
+      - [Example: local storage](#example-local-storage)
+      - [Example: affect of storage classes](#example-affect-of-storage-classes)
+      - [Example: network attached storage](#example-network-attached-storage)
     - [Size of ephemeral inline volumes](#size-of-ephemeral-inline-volumes)
   - [Updating capacity information with external-provisioner](#updating-capacity-information-with-external-provisioner)
     - [Only inline ephemeral volumes](#only-inline-ephemeral-volumes)
@@ -225,52 +228,19 @@ type CSIDriverSpec struct {
 // CSIDriverStatus represents dynamic information about the driver and
 // the storage provided by it, like for example current capacity.
 type CSIDriverStatus struct {
-	// Each driver can provide different kinds of storage.
-	// +patchMergeKey=storageClassName
-	// +patchStrategy=merge
-	// +listType=map
-	// +listMapKey=storageClassName
-	// +optional
-	Storage []CSIStorage `patchStrategy:"merge" patchMergeKey:"storageClassName" json:"storage,omitempty" protobuf:"bytes,1,opt,name=storage"`
-}
-
-// CSIStorage contains information for one particular kind of storage
-// provided by a CSI driver.
-type CSIStorage struct {
-	// The storage class name matches the name of some actual
-	// `StorageClass`, in which case the information applies when
-	// using that storage class for a volume. There are also two
-	// special names:
-	// - <ephemeral> for storage used by ephemeral inline volumes (which
-	//   don't use a storage class)
-	// - <fallback> for storage that is the same regardless of the storage class;
-	//   it is applicable if there is no other, more specific entry
-	StorageClassName string `json:"storageClassName" protobuf:"bytes,1,name=storageClassName"`
-
-	// A CSI driver may allocate storage from one or more pools
-	// with different attributes. The entries must have names that
-	// are unique inside this list.
+	// Each driver can provide access to different storage pools
+	// (= subsets of the overall storage with certain shared
+	// attributes).
 	//
 	// +patchMergeKey=name
 	// +patchStrategy=merge
 	// +listType=map
 	// +listMapKey=name
 	// +optional
-	Pools []CSIStoragePool `patchStrategy:"merge" patchMergeKey:"name" json:"pools,omitempty" protobuf:"bytes,2,opt,name=pools"`
+	Storage []CSIStoragePool `patchStrategy:"merge" patchMergeKey:"name" json:"storage,omitempty" protobuf:"bytes,1,opt,name=storage"`
 }
 
-const (
-	// FallbackStorageClassName is used for a CSIStorage element which
-	// applies when there isn't a more specific element for the
-	// current storage class or ephemeral volume.
-	FallbackStorageClassName = "<fallback>"
-
-	// EphemeralStorageClassName is used for storage from which
-	// ephemeral volumes are allocated.
-	EphemeralStorageClassName = "<ephemeral>"
-)
-
-// CSIStoragePoolInfo identifies one particular storage pool and
+// CSIStoragePool identifies one particular storage pool and
 // stores the corresponding attributes.
 //
 // A pool might only be accessible from a subset of the nodes in the
@@ -288,21 +258,56 @@ type CSIStoragePool struct {
 
 	// NodeList can be used to describe a storage pool that is available
 	// only for certain nodes in the cluster.
-    //
-    // +listType=set
+	//
+	// +listType=set
 	// +optional
 	NodeList []string `json:"nodeList,omitempty" protobuf:"bytes,3,opt,name=nodeList"`
+
+	// Some information, like the actual usable capacity, may
+	// depend on the storage class used for volumes.
+	//
+	// +patchMergeKey=storageClassName
+	// +patchStrategy=merge
+	// +listType=map
+	// +listMapKey=storageClassName
+	// +optional
+	Classes []CSIStorageByClass `patchStrategy:"merge" patchMergeKey:"storageClassName" json:"classes,omitempty" protobuf:"bytes,4,opt,name=classes"`
+}
+
+// CSIStorageByClass contains information that applies to one storage
+// pool of a CSI driver when using a certain storage class.
+type CSIStorageByClass struct {
+	// The storage class name matches the name of some actual
+	// `StorageClass`, in which case the information applies when
+	// using that storage class for a volume. There are also two
+	// special names:
+	// - <ephemeral> for storage used by ephemeral inline volumes (which
+	//   don't use a storage class)
+	// - <fallback> for storage that is the same regardless of the storage class;
+	//   it is applicable if there is no other, more specific entry
+	StorageClassName string `json:"storageClassName" protobuf:"bytes,1,name=storageClassName"`
 
 	// Capacity is the size of the largest volume that currently can
 	// be created. This is a best-effort guess and even volumes
 	// of that size might not get created successfully.
 	// +optional
-	Capacity *resource.Quantity `json:"capacity,omitempty" protobuf:"bytes,4,opt,name=capacity"`
+	Capacity *resource.Quantity `json:"capacity,omitempty" protobuf:"bytes,2,opt,name=capacity"`
 
 	// ExpiryTime is the absolute time at which this entry becomes obsolete.
 	// When not set, the entry is valid forever.
-	ExpiryTime *metav1.Time `json:"expiryTime,omitempty" protobuf:"bytes,5,opt,name=expiryTime"`
+	ExpiryTime *metav1.Time `json:"expiryTime,omitempty" protobuf:"bytes,3,opt,name=expiryTime"`
 }
+
+const (
+	// FallbackStorageClassName is used for a CSIStorage element which
+	// applies when there isn't a more specific element for the
+	// current storage class or ephemeral volume.
+	FallbackStorageClassName = "<fallback>"
+
+	// EphemeralStorageClassName is used for storage from which
+	// ephemeral volumes are allocated.
+	EphemeralStorageClassName = "<ephemeral>"
+)
 ```
 
 This API is designed so that updating a `CSIStoragePool` can be done
@@ -317,6 +322,115 @@ How the availability of the `CSIStoragePool` within the cluster is
 defined is up to the CSI driver. This may get extended in the future
 to also cover other use cases, like reporting the capacity of
 individual disks inside a node.
+
+##### Example: local storage
+
+In this example, one node has the hostpath example driver
+installed. Storage class parameters do not affect the usable capacity,
+so there is only one `CSIStorageByClass`:
+
+```
+apiVersion: storage.k8s.io/v1beta1
+kind: CSIDriver
+metadata:
+  creationTimestamp: "2019-11-13T15:36:00Z"
+  name: hostpath.csi.k8s.io
+  resourceVersion: "583"
+  selfLink: /apis/storage.k8s.io/v1beta1/csidrivers/hostpath.csi.k8s.io
+  uid: 6040df83-a938-4b1a-aea6-92360b0a3edc
+spec:
+  attachRequired: true
+  podInfoOnMount: true
+  volumeLifecycleModes:
+  - Persistent
+  - Ephemeral
+status:
+  storage:
+  - classes:
+    - capacity: 256G
+      storageClassName: <fallback>
+    name: node-1
+    nodeList:
+    - node-1
+```
+
+##### Example: affect of storage classes
+
+This fictional LVM CSI driver can either use 256GB of local disk space
+for striped or mirror volumes. Mirrored volumes need twice the amount
+of local disk space, so the maximum volume size is halved:
+
+```
+apiVersion: storage.k8s.io/v1beta1
+kind: CSIDriver
+metadata:
+  creationTimestamp: "2019-11-13T15:36:01Z"
+  name: lvm
+  resourceVersion: "585"
+  selfLink: /apis/storage.k8s.io/v1beta1/csidrivers/lvm
+  uid: 9c17f6fc-6ada-488f-9d44-c5d63ecdf7a9
+spec:
+  attachRequired: true
+  podInfoOnMount: false
+  volumeLifecycleModes:
+  - Persistent
+status:
+  storage:
+  - classes:
+    - capacity: 256G
+      storageClassName: striped
+    - capacity: 128G
+      storageClassName: mirrored
+    name: node-1
+    nodeList:
+    - node-1
+```
+
+##### Example: network attached storage
+
+The algorithm outlined in [Central
+provisioning](#central-provisioning) will result in `CSIStoragePool`
+entries using `NodeTopology`, similar to this hand-crafted example:
+
+```
+apiVersion: storage.k8s.io/v1beta1
+kind: CSIDriver
+metadata:
+  creationTimestamp: "2019-11-13T15:36:01Z"
+  name: pd.csi.storage.gke.io
+  resourceVersion: "584"
+  selfLink: /apis/storage.k8s.io/v1beta1/csidrivers/pd.csi.storage.gke.io
+  uid: b0963bb5-37cf-415d-9fb1-667499172320
+spec:
+  attachRequired: true
+  podInfoOnMount: false
+  volumeLifecycleModes:
+  - Persistent
+status:
+  storage:
+  - classes:
+    - capacity: 128G
+      storageClassName: <fallback>
+    name: region-east
+    nodeTopology:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: failure-domain.beta.kubernetes.io/region
+          operator: In
+          values:
+          - us-east-1
+  - classes:
+    - capacity: 256G
+      storageClassName: <fallback>
+    name: region-west
+    nodeTopology:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: failure-domain.beta.kubernetes.io/region
+          operator: In
+          values:
+          - us-west-1
+```
 
 #### Size of ephemeral inline volumes
 
@@ -418,9 +532,19 @@ segments as normal volumes.
 
 `CSIDriver.Status` then must be updated:
 - when nodes change
+- when storage classes change
 - when volumes were created or deleted
 - periodically, to detect changes in the underlying backing store; a
   CSI spec extension would be necessary to avoid this polling
+
+Optionally, the driver deployment can also indicate to
+external-provisioner that it manages storage that:
+- is local to the node, which enables the usage of per-node
+  `CSIStoragePool` entries ([affect of storage
+  classes](#example-affect-of-storage-classes))
+- is not affected by storage class parameters, which enables the usage
+  of one `CSIStorageByClass` entry with `<fallback>` as storage class
+  name ([local storage](#example-local-storage))
 
 ### Using capacity information
 
