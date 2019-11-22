@@ -51,6 +51,9 @@ see-also:
 - [Drawbacks](#drawbacks)
 - [Alternatives](#alternatives)
   - [Separate objects](#separate-objects)
+    - [Example: local storage](#example-local-storage-1)
+    - [Example: affect of storage classes](#example-affect-of-storage-classes-1)
+    - [Example: network attached storage](#example-network-attached-storage-1)
   - [Prior work](#prior-work)
 <!-- /toc -->
 
@@ -352,6 +355,12 @@ status:
     name: node-1
     nodeList:
     - node-1
+  - classes:
+    - capacity: 512G
+      storageClassName: <fallback>
+    name: node-2
+    nodeList:
+    - node-2
 ```
 
 ##### Example: affect of storage classes
@@ -597,17 +606,219 @@ Why should this KEP _not_ be implemented - TBD.
 ### Separate objects
 
 The proposed `CSIDriver.Status` combines all information in one object
-in a way that is both human-readable and matches the lookup pattern of
-the controller.
+in a way that is both human-readable (albeit potentially large) and
+matches the lookup pattern of the controller.
 
-Alternatively, `CSIStoragePool` could also be its own type, with
-multiple independent objects. But then each object would have to have
-a copy of the driver and storage class name and both the number of
-object as well as the total amount of data in etcd increases.
+Alternatively, `CSIStoragePool` could also be its own type, with less nesting:
+```
+// CSIStoragePool identifies one particular storage pool and
+// stores the corresponding attributes. The spec is read-only.
+//
+// There should never be two objects with the same spec. If
+// a consumer of this information finds two objects with the
+// same spec, it should use the information from the one with the
+// most recent CreationTimestamp.
+type CSIStoragePool struct {
+	metav1.TypeMeta
+	// Standard object's metadata. The name has no particular meaning and just has to
+	// meet the usual requirements (length, characters, unique). The recommendation is to use sp-<uuid>.
+	//
+	// More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata
+	// +optional
+	metav1.ObjectMeta
 
-Naming those objects will become harder and most likely wouldn't be
-useful to a human (UUID or hash of its attributes). Removing those
-objects becomes harder.
+	Spec   CSIStoragePoolSpec
+	Statuc CSIStoragePoolStatus
+}
+
+// CSIStoragePoolSpec contains the constant attributes of a CSIStoragePool.
+//
+// A pool might only be accessible from a subset of the nodes in the
+// cluster. That subset can be identified either via NodeTopology or
+// NodeList, but not both. If neither is set, the pool is assumed
+// to be available in the entire cluster.
+type CSIStoragePoolSpec struct {
+    // The CSI driver that provides access to the storage pool.
+	// This must be the string returned by the CSI GetPluginName() call.
+	DriverName string
+
+	// NodeTopology can be used to describe a storage pool that is available
+	// only for nodes matching certain criteria.
+	// +optional
+	NodeTopology *v1.NodeSelector
+
+	// NodeList can be used to describe a storage pool that is available
+	// only for certain nodes in the cluster.
+	//
+	// +listType=set
+	// +optional
+	NodeList []string
+}
+
+// CSIStoragePoolStatus contains runtime information about a CSIStoragePool.
+//
+// It is expected to be extended with other
+// attributes which do not depend on the storage class, like health of
+// the pool. Therefore it has the list of
+// `CSIStorageByClass` instances instead of just the capacity
+// and the storage class being in the spec.
+type CSIStoragePoolStatus struct {
+	// Some information, like the actual usable capacity, may
+	// depend on the storage class used for volumes.
+	//
+	// +patchMergeKey=storageClassName
+	// +patchStrategy=merge
+	// +listType=map
+	// +listMapKey=storageClassName
+	// +optional
+	Classes []CSIStorageByClass `patchStrategy:"merge" patchMergeKey:"storageClassName" json:"classes,omitempty" protobuf:"bytes,4,opt,name=classes"`
+}
+
+// CSIStorageByClass contains information that applies to one storage
+// pool of a CSI driver when using a certain storage class.
+type CSIStorageByClass struct {
+	// The storage class name matches the name of some actual
+	// `StorageClass`, in which case the information applies when
+	// using that storage class for a volume. There are also two
+	// special names:
+	// - <ephemeral> for storage used by ephemeral inline volumes (which
+	//   don't use a storage class)
+	// - <fallback> for storage that is the same regardless of the storage class;
+	//   it is applicable if there is no other, more specific entry
+	StorageClassName string `json:"storageClassName" protobuf:"bytes,1,name=storageClassName"`
+
+	// Capacity is the size of the largest volume that currently can
+	// be created. This is a best-effort guess and even volumes
+	// of that size might not get created successfully.
+	// +optional
+	Capacity *resource.Quantity `json:"capacity,omitempty" protobuf:"bytes,2,opt,name=capacity"`
+}
+
+const (
+	// FallbackStorageClassName is used for a CSIStorage element which
+	// applies when there isn't a more specific element for the
+	// current storage class or ephemeral volume.
+	FallbackStorageClassName = "<fallback>"
+
+	// EphemeralStorageClassName is used for storage from which
+	// ephemeral volumes are allocated.
+	EphemeralStorageClassName = "<ephemeral>"
+)
+```
+
+This approach has the advantage that each object is smaller and its size does
+not grow with the number of different storage pools in the cluster.
+
+The downsides are:
+- Some attributes (driver name, topology) must be stored multiple times,
+  so overall size in etcd is higher.
+- Higher number of objects.
+- Constraints like "unique spec" cannot be enforced by
+  the API server.
+- The CSIStoragePoolSpec cannot be turned into a suitable object name
+  for finding objects by name. Hashing was proposed earlier but then there's
+  a risk of hash colisions
+  (https://docs.google.com/document/d/1WtX2lRJjZ03RBdzQIZY3IOvmoYiF5JxDX35-SsCIAfg/edit?disco=AAAADMBYnPc),
+  so in practice producers of such objects must first search for an
+  existing object with a matching spec before creating one anew
+  with a random UUID as name. Either way, a human can only find the information
+  they look for by searching among all objects.
+- Removing all objects of a driver when uninstalling the driver becomes
+  harder. First the driver must be shut down (otherwise there is a race),
+  then objects can be searched and deleted one-by-one.
+
+#### Example: local storage
+
+```
+apiVersion: storage.k8s.io/v1alpha1
+kind: CSIStoragePool
+metadata:
+  name: sp-ab96d356-0d31-11ea-ade1-8b7e883d1af1
+spec:
+  driverName: hostpath.csi.k8s.io
+  nodeList:
+  - node-1
+status:
+  classes:
+  - capacity: 256G
+    storageClassName: <fallback>
+
+apiVersion: storage.k8s.io/v1alpha1
+kind: CSIStoragePool
+metadata:
+  name: sp-c3723f32-0d32-11ea-a14f-fbaf155dff50
+spec:
+  driverName: hostpath.csi.k8s.io
+  nodeList:
+  - node-2
+status:
+  classes:
+  - capacity: 512G
+    storageClassName: <fallback>
+```
+
+#### Example: affect of storage classes
+
+```
+apiVersion: storage.k8s.io/v1alpha1
+kind: CSIStoragePool
+metadata:
+  name: sp-9c17f6fc-6ada-488f-9d44-c5d63ecdf7a9
+spec:
+  driverName: lvm
+  nodeList:
+  - node-1
+status:
+  classes:
+  - capacity: 256G
+    storageClassName: striped
+  - capacity: 128G
+    storageClassName: mirrored
+```
+
+#### Example: network attached storage
+
+```
+apiVersion: storage.k8s.io/v1alpha1
+kind: CSIStoragePool
+metadata:
+  name: sp-b0963bb5-37cf-415d-9fb1-667499172320
+spec:
+  driverName: pd.csi.storage.gke.io
+  nodeTopology:
+    nodeSelectorTerms:
+    - matchExpressions:
+      - key: failure-domain.beta.kubernetes.io/region
+        operator: In
+        values:
+        - us-east-1
+status:
+  classes:
+  - capacity: 128G
+    storageClassName: <fallback>
+
+apiVersion: storage.k8s.io/v1alpha1
+kind: CSIStoragePool
+metadata:
+  name: sp-64103396-0d32-11ea-945c-e3ede5f0f3ae
+spec:
+  driverName: pd.csi.storage.gke.io
+status:
+  classes:
+  - capacity: 128G
+    storageClassName: <fallback>
+  nodeTopology:
+    nodeSelectorTerms:
+    - matchExpressions:
+      - key: failure-domain.beta.kubernetes.io/region
+        operator: In
+        values:
+        - us-west-1
+status:
+  classes:
+  - capacity: 256G
+    storageClassName: <fallback>
+```
 
 ### Prior work
 
