@@ -31,6 +31,10 @@ see-also:
 - [Proposal](#proposal)
   - [User Stories](#user-stories)
     - [Ephemeral PMEM volume for Redis](#ephemeral-pmem-volume-for-redis)
+    - [Different LVM configurations](#different-lvm-configurations)
+    - [Network attached storage](#network-attached-storage)
+    - [Custom schedulers](#custom-schedulers)
+    - [Operators for applications](#operators-for-applications)
   - [Caching remaining capacity via the API server](#caching-remaining-capacity-via-the-api-server)
   - [Identifying storage pools](#identifying-storage-pools)
   - [Size of ephemeral inline volumes](#size-of-ephemeral-inline-volumes)
@@ -102,62 +106,59 @@ because storage capacity gets freed up or extended. What does not
 happen is that the pod is re-scheduled to some other node which has
 enough storage capacity.
 
+A new API for exposing storage capacity currently available via CSI
+drivers and a scheduler enhancement that uses this information will
+reduce the risk of that happening.
+
 ## Motivation
 
 ### Goals
 
-The goal of this KEP is to increase the chance of choosing a node for
-which volume creation will succeed by tracking the currently available
-capacity available through a CSI driver and using that information
-during pod scheduling.
+* Define an API for exposing information about storage that is
+  flexible enough for a variety of use cases and that can be extended
+  later on.
 
-Although the issue is more common with storage that is local to a node
-(LVM, PMEM), it may also occur for storage providers that have
-capacity limits for other topology segments (rack, data center,
-region, etc.). Capacity tracking is meant to be generic enough to
-support all of these cases.
+* Expose capacity information at the semantic
+  level that Kubernetes currently understands, i.e. in a way that
+  Kubernetes can compare capacity against the requested size of
+  volumes. This has to work for local storage, network-attached
+  storage and for drivers where the capacity depends on parameters in
+  the storage class.
 
-Inline volumes currently do not have a standardized way of specify the
-size; this KEP will introduce such a field and ensure that capacity
-tracking also works for drivers which only support ephemeral inline
-volumes.
-
-For persistent volumes, capacity will be tracked per storage class, so
-additional parameters in a storage class are taken into account. This
-is important because those parameters might have a significant impact on
-how much space a new volume actually needs in the underlying storage
-system (for example, an LVM volume with mirroring needs more space
-than a LVM volume that is striped). For ephemeral volumes there is no
-storage class, so tracking is only done per node and provisioner.
+* Increase the chance of choosing a node for which volume creation
+  will succeed by tracking the currently available capacity available
+  through a CSI driver and using that information during pod
+  scheduling.
 
 ### Non-Goals
 
-Only CSI drivers will be supported.
+* Only CSI drivers will be supported.
 
-The Kubernetes scheduler could try to anticipate the effect of
-creating multiple volumes concurrently. But this depends on knowledge
-about internal driver details that Kubernetes doesn’t have, so pending
-volume operations are simply ignored when making scheduling decisions.
+* No attempts will be made to model how capacity will be affected by
+  pending volume operations. This would depend on internal driver
+  details that Kubernetes doesn’t have.
 
-Because of that and also for other reasons (capacity changed via
-operations outside of Kubernetes, like creating or deleting volumes,
-or expanding the storage), it is expected that pod scheduling may
-still end up with a node from time to time where volume creation then
-fails. Rolling back in this case is complicated and outside of the
-scope of this KEP. For example, a pod might use two persistent
-volumes, of which one was created and the other not, and then it
-wouldn’t be obvious whether the existing volume can or should be
-deleted.
+* Because of that and also for other reasons (capacity changed via
+  operations outside of Kubernetes, like creating or deleting volumes,
+  or expanding the storage), it is expected that pod scheduling may
+  still end up with a node from time to time where volume creation
+  then fails. Rolling back in this case is complicated and outside of
+  the scope of this KEP. For example, a pod might use two persistent
+  volumes, of which one was created and the other not, and then it
+  wouldn’t be obvious whether the existing volume can or should be
+  deleted.
 
-For persistent volumes that get created independently of a pod nothing
-changes: it’s still the responsibility of the CSI driver to decide how
-to create the volume and then communicate back through topology
-information where pods using that volume need to run.
+* For persistent volumes that get created independently of a pod
+  nothing changes: it’s still the responsibility of the CSI driver to
+  decide how to create the volume and then communicate back through
+  topology information where pods using that volume need to run.
+  However, a CSI driver may use the capacity information exposed
+  through the proposed API to make its choice.
 
-Inline volumes could be extended to reference a storage class, which
-then could be used to handle more complex situations (like the LVM
-mirror vs. striped case) also for inline volumes. But this is outside
-the scope of this KEP.
+* Inline volumes could be extended to reference a storage class, which
+  then could be used to handle more complex situations (like the LVM
+  mirror vs. striped case) also for inline volumes. But this is outside
+  the scope of this KEP.
 
 ## Proposal
 
@@ -176,6 +177,48 @@ backed by PMEM and provided by
 that is local to a node and thus the scheduler has to be aware whether
 enough of it is available on a node before assigning a pod to it.
 
+#### Different LVM configurations
+
+A user may want to choose between higher performance of local disks
+and higher fault tolerance by selecting striping respectively
+mirroring or raid in the storage class parameters of a driver for LVM,
+like for example [TopoLVM](https://github.com/cybozu-go/topolvm).
+
+The maximum size of the resulting volume then depends on the storage
+class and its parameters.
+
+#### Network attached storage
+
+In contrast to local storage, network attached storage can be made
+available on more than just one node. However, for technical reasons
+(high-speed network for data transfer inside a single data center) or
+political reasons (data must only be stored and processed in a single
+jurisdication) availability may still be limited to a subset of the
+nodes in a cluster.
+
+#### Custom schedulers
+
+For situations not handled by the Kubernetes scheduler now and/or in
+the future, a [scheduler
+extender](https://github.com/kubernetes/community/blob/master/contributors/design-proposals/scheduling/scheduler_extender.md)
+can influence pod scheduling based on the information exposed via the
+new API. The
+[topolvm-scheduler](https://github.com/cybozu-go/topolvm/blob/master/docs/design.md#how-the-scheduler-extension-works)
+currently does that with a driver-specific way of storing capacity
+information.
+
+#### Operators for applications
+
+Application operators for modern scale out storage services
+(e.g. MongoDB, ElasticSearch, Kafka, MySQL, PostgreSQL, Minio, etc.)
+may want to control creation of volumes carefully in order to optimize
+availability, durability, performance and cost. For more information
+about this, see the [StoragePool API for Advanced Storage Placement
+KEP](https://github.com/kubernetes/enhancements/pull/1347).
+
+Storage pools as introduced in this KEP enable the creation of such
+operators by providing them the necessary information about storage in
+the cluster.
 
 ### Caching remaining capacity via the API server
 
@@ -556,12 +599,13 @@ delete `CSIStoragePool` objects:
 - when nodes change (for central provisioning)
 - when storage classes change (for persistent volumes)
 - when volumes were created or deleted (for central provisioning)
-- periodically, to detect changes in the underlying backing store; a
-  CSI spec extension would be necessary to avoid this polling (all cases)
+- when volumes are resized or snapshots are created or deleted (for persistent volumes)
+- periodically, to detect changes in the underlying backing store (all cases)
 
-That last point also covers ephemeral inline volumes, because creating
-or deleting those is not something that external-provisioner gets
-notified of.
+Because sidecars are currently separated, external-snapshotter is
+unaware of resizing and snapshotting. It also not involved with
+ephemeral inline volumes. The periodic polling will catch up
+with changes caused by those operations.
 
 ### Using capacity information
 
