@@ -45,8 +45,7 @@ status: provisional
     - [Story 2](#story-2)
     - [Story 3](#story-3)
   - [Implementation Details/Notes/Constraints](#implementation-detailsnotesconstraints)
-    - [New CRD to surface Storage Pools](#new-crd-to-surface-storage-pools)
-    - [API definitions for the Storage Pool](#api-definitions-for-the-storage-pool)
+    - [Storage Pools](#storage-pools)
     - [CSI changes](#csi-changes)
     - [New external controller for StoragePool](#new-external-controller-for-storagepool)
     - [Usage of StoragePool objects by application](#usage-of-storagepool-objects-by-application)
@@ -202,83 +201,11 @@ The placement choices in this use case cannot be expressed using existing Kubern
 
 ### Implementation Details/Notes/Constraints
 
-#### New CRD to surface Storage Pools
-```
-apiVersion: storagepool.storage.k8s.io/v1alpha1
-kind: StoragePool
-metadata:
-  name: storagePool1
-  labels:
-     labelKey: labelValue
-spec:
-  driver: myDriver
-  parameters:
-     csiBackendSpecificOpaqueKey: csiBackendSpecificOpaqueValue
-status:
-  accessibleNodes: 
-  - node1
-  - node2
-  capacity:
-    total: 124676572
-```
+#### Storage Pools
 
-#### API definitions for the Storage Pool
-```
-type StoragePool struct {
-        metav1.TypeMeta
-        // +optional
-        metav1.ObjectMeta
- 
-        // Spec defines the desired state of a storage pool
-        // +optional
-        Spec StorgePoolSpec
- 
-        // Status represents the current information about a storage pool
-        // +optional
-        Status StoragePoolStatus
-}
- 
-// StoragePoolSpec describes the attributes of a storage pool
-Type StoragePoolSpec struct {
-    	// Name of the driver
-    	Driver string
- 
-    	// Opaque parameters describing attributes of the storage pool
-    	+optional
-    	Parameters map[string]string
-}
- 
-type StoragePoolStatus struct {
-    	// Nodes the storage pool has access to
-    	+optional
-  	AccessibleNodes []string
-  	// Capacity of the storage pool
-  	+optional
-  	Capacity *PoolCapacity
-  	// Last errors happened on the pool
-  	+optional
-  	Errors []StoragePoolError
-}
- 
-type PoolCapacity struct {
-    	// Total capacity of the storage pool
-    	// +optional
-    	Total *resource.Quantity
-}
- 
-// Describes an error encountered on the pool
-type StoragePoolError struct {
-    	// Time is the timestamp when the error was encountered.
-    	// +optional
-    	Time *metav1.Time
- 
-    	// Message details the encountered error
-    	// +optional
-    	Message *string
-}
-```
-
-Note that `StoragePool` are non-namespaced. 
+The proposed API from the [Storage Capacity Constraints for Pod
+Scheduling KEP](https://github.com/kubernetes/enhancements/pull/1353)
+will be used to surface information about storage in the cluster.
 
 #### CSI changes
 
