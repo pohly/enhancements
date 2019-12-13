@@ -12,7 +12,7 @@ approvers:
   - TBD
 editor: "@pohly"
 creation-date: 2019-09-19
-last-updated: 2019-10-31
+last-updated: 2019-12-12
 status: provisional
 see-also:
   - "https://docs.google.com/document/d/1WtX2lRJjZ03RBdzQIZY3IOvmoYiF5JxDX35-SsCIAfg"
@@ -40,7 +40,6 @@ see-also:
       - [Example: local storage](#example-local-storage)
       - [Example: affect of storage classes](#example-affect-of-storage-classes)
       - [Example: network attached storage](#example-network-attached-storage)
-    - [fsSize](#fssize)
     - [CSIDriver.spec.storageCapacity](#csidriverspecstoragecapacity)
   - [Updating capacity information with external-provisioner](#updating-capacity-information-with-external-provisioner)
     - [Only local volumes](#only-local-volumes)
@@ -205,7 +204,8 @@ and driver.
 
 Currently Kubernetes has no information about the size of an ephemeral
 inline volume. A new `CSIVolumeSource.fsSize` field needs to be added
-to expose that in a vendor-agnostic way.
+to expose that in a vendor-agnostic way. Details for that are in
+https://github.com/kubernetes/enhancements/pull/1353.
 
 ### Pod scheduling
 
@@ -429,42 +429,6 @@ status:
   - capacity: 256G
     storageClassName: <fallback>
 ```
-
-
-#### fsSize
-
-A new field `fsSize` of type `*Quantity` in
-[CSIVolumeSource](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.16/#csivolumesource-v1-core)
-needs to be added, alongside the existing `fsType`. It must be a
-pointer to distinguish between no size and zero size selected.
-
-While `fsType` can (and does get) mapped to
-`NodePublishVolumeRequest.volume_capability`, for `fsSize` we need a
-different approach for passing it to the CSI driver because there is
-no pre-defined field for it in `NodePublishVolumeRequest`. We can
-extend the [pod info on
-mount](https://kubernetes-csi.github.io/docs/pod-info.html) feature:
-if (and only if) the driver enables that, then a new
-`csi.storage.k8s.io/size` entry in
-`NodePublishVolumeRequest.publish_context` is set to the string
-representation of the size quantity. An unset size is passed as empty
-string.
-
-This has to be optional because CSI drivers written for 1.16 might do
-strict validation of the `publish_context` content and reject volumes
-with unknown fields. If the driver enables pod info, then new fields
-in the `csi.storage.k8s.io` namespace are explicitly allowed.
-
-Using that new `fsSize` field must be optional. If a CSI driver
-already accepts a size specification via some driver-specific
-parameter, then specifying the size that way must continue to
-work. But if the `fsSize` field is set, a CSI driver should use that
-and treat it as an error when both `fsSize` and the driver-specific
-parameter are set.
-
-Setting `fsSize` for a CSI driver which ignores the field is not an
-error. This is similar to setting `fsType` which also may get ignored
-silently.
 
 #### CSIDriver.spec.storageCapacity
 
