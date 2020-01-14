@@ -297,7 +297,7 @@ type CSIStoragePool struct {
 //
 // A pool might only be accessible from a subset of the nodes in the
 // cluster. That subset can be identified either via NodeTopology or
-// NodeList, but not both. If neither is set, the pool is assumed
+// Nodes, but not both. If neither is set, the pool is assumed
 // to be available in the entire cluster.
 type CSIStoragePoolSpec struct {
     // The CSI driver that provides access to the storage pool.
@@ -572,6 +572,15 @@ parameters do not affect capacity.
 The result is then stored in a different `CSIStoragePool` object for
 each identified pool, with a `NodeTopology` that selects the right
 nodes via their labels.
+
+Drivers that don't support topology can use
+`--enable-capacity=global-ephemeral`,
+`--enable-capacity=global-persistent` and/or
+`--enable-capacity=global-fallback`. Those are similar to their
+`topology-*` counterparts but without identifying pools and thus
+without `GetCapacityRequest.accessible_topology` The resulting
+`CSIStoragePool` objects then have neither `Nodes` nor `NodeSelector` set and
+thus apply to all nodes in the cluster.
 
 #### CSIStoragePool lifecycle
 
