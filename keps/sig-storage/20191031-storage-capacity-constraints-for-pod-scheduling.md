@@ -7,12 +7,12 @@ owning-sig: sig-storage
 participating-sigs:
   - sig-scheduling
 reviewers:
-  - TBD
+  - "@saad-ali"
 approvers:
-  - TBD
+  - "@saad-ali"
 editor: "@pohly"
 creation-date: 2019-09-19
-last-updated: 2019-12-12
+last-updated: 2020-01-14
 status: provisional
 see-also:
   - "https://docs.google.com/document/d/1WtX2lRJjZ03RBdzQIZY3IOvmoYiF5JxDX35-SsCIAfg"
