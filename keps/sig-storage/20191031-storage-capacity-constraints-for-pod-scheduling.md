@@ -12,8 +12,8 @@ approvers:
   - "@saad-ali"
 editor: "@pohly"
 creation-date: 2019-09-19
-last-updated: 2020-01-14
-status: provisional
+last-updated: 2020-01-17
+status: implementable
 see-also:
   - "https://docs.google.com/document/d/1WtX2lRJjZ03RBdzQIZY3IOvmoYiF5JxDX35-SsCIAfg"
 ---
@@ -50,11 +50,8 @@ see-also:
     - [Central provisioning](#central-provisioning)
     - [CSIStoragePool lifecycle](#csistoragepool-lifecycle)
   - [Using capacity information](#using-capacity-information)
-  - [Risks and Mitigations](#risks-and-mitigations)
 - [Design Details](#design-details)
   - [Test Plan](#test-plan)
-  - [Upgrade / Downgrade Strategy](#upgrade--downgrade-strategy)
-  - [Version Skew Strategy](#version-skew-strategy)
 - [Implementation History](#implementation-history)
 - [Drawbacks](#drawbacks)
 - [Alternatives](#alternatives)
@@ -631,29 +628,72 @@ The lookup sequence will be:
   (driver, accessible by node) and sufficient capacity for the
   volume attributes (storage class vs. ephemeral)
 
-### Risks and Mitigations
-
-TBD
-
 ## Design Details
 
 ### Test Plan
 
-TBD
+The Kubernetes scheduler extension will be tested with new unit tests
+that simulate a variety of scenarios:
+- different volume sizes and types
+- driver with and without storage capacity tracking enabled
+- capacity information for node local storage (node list with one
+  entry), network attached storage (node selector as well as node list
+  with multiple entries), storage available in the entire cluster (no
+  node restriction)
+- no suitable node, one suitable node, several suitable nodes
 
-### Upgrade / Downgrade Strategy
+Producing capacity information in external-provisioner also can be
+tested with new unit tests. This has to cover:
+- different modes
+- different storage classes
+- a driver response where storage classes matter and where they
+  don't matter
+- different topologies
+- various older capacity information, including:
+  - no entries
+  - obsolete entries
+  - entries that need to be updated
+  - entries that can be left unchanged
 
-TBD
+This needs to run with mocked CSI driver and API server interfaces to
+provide the input and capture the output.
 
-### Version Skew Strategy
+Full end-to-end testing is needed to ensure that new RBAC rules are
+identified and documented properly. For this, a new alpha deployment
+in csi-driver-host-path is needed because we have to make changes to
+the deployment like setting `CSIDriver.spec.storageCapacity` which
+will only be valid when tested with Kubernetes 1.18 cluster where
+alpha features are enabled.
 
-TBD
+The CSI hostpath driver needs to be changed such that it reports the
+remaining capacity of the filesystem where it creates volumes. The
+existing raw block volume tests then can be used to ensure that pod
+scheduling works:
+- Those volumes have a size set.
+- Late binding is enabled for the CSI hostpath driver.
+
+A new test can be written which checks for `CSIStoragePool` objects,
+asks for pod scheduling with a volume that is too large, and then
+checks for events that describe the problem.
 
 ## Implementation History
 
+- Kubernetes 1.18: alpha (tentative)
+
 ## Drawbacks
 
-Why should this KEP _not_ be implemented - TBD.
+The attempt to define and implement a generic solution may end up with
+something that isn't capable enough in practice because it does not
+know enough about specific limitations of individual CSI drivers.
+
+At the moment, storage vendor can already achieve the same goals
+entirely without changes in Kubernetes or Kubernetes-CSI, it's just a
+lot of work (see the [TopoLVM
+design](https://github.com/cybozu-go/topolvm/blob/master/docs/design.md#diagram))
+- custom node and controller sidecars
+- scheduler extender (probably slower than a builtin scheduler
+  callback)
+
 
 ## Alternatives
 
