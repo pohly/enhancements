@@ -280,6 +280,8 @@ type CSIStoragePool struct {
 	// there are no conflicts with other CSI drivers on the cluster, the recommendation
 	// is to use sp-<uuid>.
 	//
+	// Objects are not namespaced.
+	//
 	// More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata
 	// +optional
 	metav1.ObjectMeta
