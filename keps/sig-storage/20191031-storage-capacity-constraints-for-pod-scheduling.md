@@ -273,17 +273,12 @@ a similar name and because some aspects are specific to CSI.
 ```
 // CSIStoragePool identifies one particular storage pool and
 // stores the corresponding attributes. The spec is read-only.
-//
-// There should never be two objects with the same spec. If
-// a consumer of this information finds two objects with the
-// same spec, it should use the information from the one with the
-// most recent CreationTimestamp.
 type CSIStoragePool struct {
 	metav1.TypeMeta
 	// Standard object's metadata. The name has no particular meaning and just has to
 	// meet the usual requirements (length, characters, unique). To ensure that
-    // there are no conflicts with other CSI drivers on the cluster, the recommendation
-    // is to use sp-<uuid>.
+	// there are no conflicts with other CSI drivers on the cluster, the recommendation
+	// is to use sp-<uuid>.
 	//
 	// More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata
 	// +optional
@@ -294,16 +289,25 @@ type CSIStoragePool struct {
 }
 
 // CSIStoragePoolSpec contains the constant attributes of a CSIStoragePool.
+type CSIStoragePoolSpec struct {
+	// The CSI driver that provides access to the storage pool.
+	// This must be the string returned by the CSI GetPluginName() call.
+	DriverName string
+}
+
+// CSIStoragePoolStatus contains runtime information about a CSIStoragePool.
 //
 // A pool might only be accessible from a subset of the nodes in the
 // cluster. That subset can be identified either via NodeTopology or
 // Nodes, but not both. If neither is set, the pool is assumed
 // to be available in the entire cluster.
-type CSIStoragePoolSpec struct {
-    // The CSI driver that provides access to the storage pool.
-	// This must be the string returned by the CSI GetPluginName() call.
-	DriverName string
-
+//
+// It is expected to be extended with other
+// attributes which do not depend on the storage class, like health of
+// the pool. Therefore it has the list of
+// `CSIStorageByClass` instances instead of just the capacity
+// and the storage class being in the spec.
+type CSIStoragePoolStatus struct {
 	// NodeTopology can be used to describe a storage pool that is available
 	// only for nodes matching certain criteria.
 	// +optional
@@ -315,16 +319,7 @@ type CSIStoragePoolSpec struct {
 	// +listType=set
 	// +optional
 	Nodes []string
-}
 
-// CSIStoragePoolStatus contains runtime information about a CSIStoragePool.
-//
-// It is expected to be extended with other
-// attributes which do not depend on the storage class, like health of
-// the pool. Therefore it has the list of
-// `CSIStorageByClass` instances instead of just the capacity
-// and the storage class being in the spec.
-type CSIStoragePoolStatus struct {
 	// Some information, like the actual usable capacity, may
 	// depend on the storage class used for volumes.
 	//
@@ -377,8 +372,7 @@ The downsides are:
   compared to a single, more complex object that contains all information
   for one CSI driver, so overall size in etcd is higher.
 - Higher number of objects which all need to be retrieved by a client
-  which does not already know which `CSIStoragePool` has a certain spec.
-- Constraints like "unique spec" cannot be enforced by the API server.
+  which does not already know which `CSIStoragePool` is is interested in.
 
 ##### Example: local storage
 
@@ -389,12 +383,12 @@ metadata:
   name: sp-ab96d356-0d31-11ea-ade1-8b7e883d1af1
 spec:
   driverName: hostpath.csi.k8s.io
-  nodes:
-  - node-1
 status:
   classes:
   - capacity: 256G
     storageClassName: <fallback>
+  nodes:
+  - node-1
 
 apiVersion: storage.k8s.io/v1alpha1
 kind: CSIStoragePool
@@ -402,12 +396,12 @@ metadata:
   name: sp-c3723f32-0d32-11ea-a14f-fbaf155dff50
 spec:
   driverName: hostpath.csi.k8s.io
-  nodes:
-  - node-2
 status:
   classes:
   - capacity: 512G
     storageClassName: <fallback>
+  nodes:
+  - node-2
 ```
 
 ##### Example: affect of storage classes
@@ -419,14 +413,14 @@ metadata:
   name: sp-9c17f6fc-6ada-488f-9d44-c5d63ecdf7a9
 spec:
   driverName: lvm
-  nodes:
-  - node-1
 status:
   classes:
   - capacity: 256G
     storageClassName: striped
   - capacity: 128G
     storageClassName: mirrored
+  nodes:
+  - node-1
 ```
 
 ##### Example: network attached storage
@@ -438,6 +432,10 @@ metadata:
   name: sp-b0963bb5-37cf-415d-9fb1-667499172320
 spec:
   driverName: pd.csi.storage.gke.io
+status:
+  classes:
+  - capacity: 128G
+    storageClassName: <fallback>
   nodeTopology:
     nodeSelectorTerms:
     - matchExpressions:
@@ -445,10 +443,6 @@ spec:
         operator: In
         values:
         - us-east-1
-status:
-  classes:
-  - capacity: 128G
-    storageClassName: <fallback>
 
 apiVersion: storage.k8s.io/v1alpha1
 kind: CSIStoragePool
@@ -458,7 +452,7 @@ spec:
   driverName: pd.csi.storage.gke.io
 status:
   classes:
-  - capacity: 128G
+  - capacity: 256G
     storageClassName: <fallback>
   nodeTopology:
     nodeSelectorTerms:
@@ -467,10 +461,6 @@ status:
         operator: In
         values:
         - us-west-1
-status:
-  classes:
-  - capacity: 256G
-    storageClassName: <fallback>
 ```
 
 #### CSIDriver.spec.storageCapacity
@@ -586,8 +576,8 @@ thus apply to all nodes in the cluster.
 
 external-provisioner needs permission to create, update and delete
 `CSIStoragePool` objects. Before creating a new object, it must check
-whether one already exists with the same spec and then update that one
-instead.
+whether one already exists with the relevant attributes (driver name +
+nodes) and then update that one instead.
 
 To ensure that `CSIStoragePool` objects get removed when the driver
 deployment gets removed before it gets a chance to clean up, each
