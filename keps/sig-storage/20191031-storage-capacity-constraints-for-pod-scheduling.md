@@ -97,11 +97,13 @@ provisioned and ask the CSI controller service to create the volume
 such that is usable by the node (via
 [`CreateVolumeRequest.accessibility_requirements`](https://kubernetes-csi.github.io/docs/topology.html)).
 
-If these volume operations fail, pod creation gets stuck. The
+If these volume operations fail, pod creation may get stuck. The
 operations will get retried and might eventually succeed, for example
-because storage capacity gets freed up or extended. What does not
-happen is that the pod is re-scheduled to some other node which has
-enough storage capacity.
+because storage capacity gets freed up or extended. A pod with an
+ephemeral volume will not get rescheduled to another node. A pod with
+a volume that uses delayed binding should get scheduled multiple times,
+but then might always land on the same node unless there are multiple
+nodes with equal priority.
 
 A new API for exposing storage capacity currently available via CSI
 drivers and a scheduler enhancement that uses this information will
@@ -134,6 +136,10 @@ reduce the risk of that happening.
 * No attempts will be made to model how capacity will be affected by
   pending volume operations. This would depend on internal driver
   details that Kubernetes doesn’t have.
+
+* Nodes are not prioritized based on how much storage they have available.
+  This and a way to specify the policy for the prioritization might be
+  added later on in a separate KEP.
 
 * Because of that and also for other reasons (capacity changed via
   operations outside of Kubernetes, like creating or deleting volumes,
