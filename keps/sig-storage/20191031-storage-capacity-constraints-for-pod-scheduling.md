@@ -253,9 +253,16 @@ and driver.
 
 ### Size of ephemeral inline volumes
 
-Currently Kubernetes has no information about the size of an ephemeral
-inline volume. A new `CSIVolumeSource.fsSize` field needs to be added
-to expose that in a vendor-agnostic way. Details for that are in
+CSI drivers that allocate storage from kubelet's root directory are
+covered by the [local ephemeral storage
+feature](https://kubernetes.io/docs/concepts/configuration/manage-compute-resources-container/#local-ephemeral-storage).
+
+This KEP is for CSI drivers that allocate volumes of a certain size
+from somewhere else. In that case, Kubernetes has currently no
+information about the size of an ephemeral inline volume and (as for
+persistent volumes) how much storage is still available.
+A new `CSIVolumeSource.fsSize` field needs to be added
+to expose the size in a vendor-agnostic way. Details for that are in
 https://github.com/kubernetes/enhancements/pull/1353.
 
 ### Pod scheduling
