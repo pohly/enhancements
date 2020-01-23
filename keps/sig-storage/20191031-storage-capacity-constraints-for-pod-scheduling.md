@@ -386,8 +386,13 @@ status:
   classes:
   - capacity: 256G
     storageClassName: <fallback>
-  nodes:
-  - node-1
+  nodeTopology:
+    nodeSelectorTerms:
+    - matchExpressions:
+      - key: kubernetes.io/hostname
+        operator: In
+        values:
+        - node-1
 
 apiVersion: storage.k8s.io/v1alpha1
 kind: CSIStoragePool
@@ -399,8 +404,13 @@ status:
   classes:
   - capacity: 512G
     storageClassName: <fallback>
-  nodes:
-  - node-2
+  nodeTopology:
+    nodeSelectorTerms:
+    - matchExpressions:
+      - key: kubernetes.io/hostname
+        operator: In
+        values:
+        - node-2
 ```
 
 ##### Example: affect of storage classes
@@ -418,8 +428,13 @@ status:
     storageClassName: striped
   - capacity: 128G
     storageClassName: mirrored
-  nodes:
-  - node-1
+  nodeTopology:
+    nodeSelectorTerms:
+    - matchExpressions:
+      - key: kubernetes.io/hostname
+        operator: In
+        values:
+        - node-1
 ```
 
 ##### Example: network attached storage
@@ -636,10 +651,9 @@ The Kubernetes scheduler extension will be tested with new unit tests
 that simulate a variety of scenarios:
 - different volume sizes and types
 - driver with and without storage capacity tracking enabled
-- capacity information for node local storage (node list with one
-  entry), network attached storage (node selector as well as node list
-  with multiple entries), storage available in the entire cluster (no
-  node restriction)
+- capacity information for node local storage (node selector with one
+  host name), network attached storage (more complex node selector),
+  storage available in the entire cluster (no node restriction)
 - no suitable node, one suitable node, several suitable nodes
 
 Producing capacity information in external-provisioner also can be
@@ -696,6 +710,16 @@ design](https://github.com/cybozu-go/topolvm/blob/master/docs/design.md#diagram)
 
 
 ## Alternatives
+
+### Node list
+
+Instead of a full node selector expression, a simple list of node
+names could make objects in some special cases, in particular
+node-local storage, smaller and easier to read. This has been removed
+from the KEP because a node selector can be used instead and therefore
+the node list was considered redundant and unnecessary. The examples
+in the next section use `nodes` in some cases to demonstrate the
+difference.
 
 ### CSIDriver.Status
 
