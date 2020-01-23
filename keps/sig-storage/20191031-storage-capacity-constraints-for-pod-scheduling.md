@@ -210,6 +210,11 @@ new API. The
 currently does that with a driver-specific way of storing capacity
 information.
 
+Alternatively, the [scheduling
+framework](https://kubernetes.io/docs/concepts/configuration/scheduling-framework/)
+can be used to build and run a custom scheduler where the desired
+policy is compiled into the scheduler binary.
+
 #### Operators for applications
 
 Application operators for modern scale out storage services
