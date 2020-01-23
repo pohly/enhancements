@@ -397,7 +397,9 @@ const (
 )
 ```
 
-This approach has the advantage that the size of the `CSIStoragePool`
+Compared to the alternative with a single object per driver (see
+[`CSIDriver.Status`](#csidriverstatus) below), this approach has
+the advantage that the size of the `CSIStoragePool`
 objects do not depend on the number of nodes in the cluster for local
 storage.
 
