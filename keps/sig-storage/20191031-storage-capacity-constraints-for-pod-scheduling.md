@@ -553,45 +553,31 @@ case only `CSIStorageByClass.MaximumVolumeSize` will be set.
 An extension of the CSI spec would be needed to enable a CSI driver to
 report both values.
 
-#### Only local volumes
+#### Without central controller
 
 This mode of operation is expected to be used by CSI drivers that need
 to track capacity per node and only support ephemeral inline volumes
-and/or persistent volumes with delayed binding (as proposed for the
+and/or persistent volumes with delayed binding that get provisioned
+by an external-provisioner instance that runs on the node where
+the volume gets provisioned (see the proposal for
 csi-driver-host-path in
 https://github.com/kubernetes-csi/external-provisioner/pull/367).
 
 The CSI driver has to implement the CSI controller service and its
 `GetCapacity` call. Its deployment has to add the external-provisioner
 to the daemon set and enable the per-node capacity tracking with
-`--enable-capacity=local-ephemeral`, `--enable-capacity=local-persistent`,
-and/or `--enable-capacity=local-fallback`.
+`--enable-capacity=local`.
 
-With `local-ephemeral` enabled, external-provisioner will call
-`GetCapacity` with an empty `GetCapacityRequest` (no capabilities, no
-parameters, no topology). With `local-persistent` enabled, it will
-call `GetCapacity` once for each storage class and a
-`GetCapacityRequest` that has no capabilities, parameters from the
-storage class, and no topology.
+The resulting `CSIStoragePool` objects then use a node selector for
+one node.
 
-`local-fallback` is the same as `local-ephemeral`, but creates a
-`CSIStorageByClass` with `StorageClassName` set to
-`FallbackStorageClassName`. This should be used instead of the other
-two options when the capacity is independent of any parameter in a
-storage class.
-
-The result is then stored in a `CSIStoragePool` for the node and
-driver.
-
-#### Central provisioning
+#### With central provisioning
 
 Normally, external-provisioner gets deployed together with a CSI
 controller service in a stateful set. That allows drivers to
 support persistent volumes without late binding.
 
-When deployed with `--enable-capacity=topology-ephemeral`,
-`--enable-capacity=topology-persistent` and/or
-`--enable-capacity=topology-fallback`, external-provisioner
+When deployed with `--enable-capacity=central`, external-provisioner
 determines storage pools based on the topology information provided by
 the driver on each node and gets capacity for the resulting pools from
 the driver's controller service that it is connected to.
@@ -610,24 +596,42 @@ With that parameter, external-provisioner can reconstruct topology segments as f
   into a `csi.Topology` instance.
 - Remove duplicates.
 
-When `topology-ephemeral` is active, for each storage class that uses
-the driver and for each of the topology segments it calls
-`GetCapacity`, with parameters from the storage class and the topology
-segment as `GetCapacityRequest.accessible_topology`.
-
-When `topology-ephemeral` is active, it also calls
-`GetCapacity` for the same segment without parameters. In other words, capacity
-information for ephemeral inline volumes is gathered through the CSI
-controller service and is assumed to be specific to the same topology
-segments as normal volumes.
-
-As before, `topology-fallback` covers the case where storage class
-parameters do not affect capacity.
-
 The result is then stored in a different `CSIStoragePool` object for
 each identified pool, with a `NodeTopology` that selects the right
 nodes via their labels.
 
+#### Determining parameters
+
+After determining the topology as described above, external-provisioner
+needs to figure out with which volume parameters it needs to call `GetCapacity`.
+
+When `--enable-capacity=storageclasses` is used, it will iterate over
+all storage classes defined for the driver and call `GetCapacity` once
+per class with the parameters defined in the class. The result will be
+stored in one `CSIStoragePoolByClass` per storage class.
+
+When `--enable-capacity=ephemeral` is used, it will call `GetCapacity`
+without parameters and create the special `<ephemeral>`
+`CSIStoragePoolByClass` entry.
+
+When `--enable-capacity=fallback` is used, it will also call without
+parameters but store the result in the special `<fallback>`
+`CSIStoragePoolByClass` entry.
+
+While technically these options are orthogonal, not all combinations
+make sense. The expected usage is:
+* A driver that only supports ephemeral volumes should use only
+  `--enable-capacity=ephemeral`. Storage classes that might
+  (accidentally?) be created for the driver will be ignored.
+* A driver where parameters have no effect on the result (for example,
+  because the only relevant field is the `fsType` and the capacity is
+  based on the underlying block device) should use
+  `--enable-capacity=fallback`. This avoids the overhead for
+  monitoring storage classes and creating one entry per class where
+  all classes would lead to the same capacity.
+* A driver where parameters have an effect should use `--enable-capacity=storageclasses`,
+  combined with `--enable-capacity=ephemeral` if ephemeral volumes
+  are supported.
 
 #### CSIStoragePool lifecycle
 
