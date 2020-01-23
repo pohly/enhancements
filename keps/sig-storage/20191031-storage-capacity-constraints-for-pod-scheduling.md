@@ -638,21 +638,25 @@ make sense. The expected usage is:
 external-provisioner needs permission to create, update and delete
 `CSIStoragePool` objects. Before creating a new object, it must check
 whether one already exists with the relevant attributes (driver name +
-nodes) and then update that one instead.
+nodes) and then update that one instead. Obsolete objects needs to be
+removed.
 
 To ensure that `CSIStoragePool` objects get removed when the driver
-deployment gets removed before it gets a chance to clean up, each
+deployment gets removed before it has a chance to clean up, each
 `CSIStoragePool` object needs an [owner
-reference](https://godoc.org/k8s.io/apimachinery/pkg/apis/meta/v1#OwnerReference)
-that points to the pod which runs the external-provisioner that
-created it. Then those objects will get garbage collected.
+reference](https://godoc.org/k8s.io/apimachinery/pkg/apis/meta/v1#OwnerReference).
 
-It is an intentional side effect that this happens also when the pod
-merely gets restarted: the external-provisioner instance can reuse
-objects that still exist and update their owner, but it doesn't need
-take care of removing old objects that it no longer needs. That is
-important when changing to a deployment that is configured differently
-because the new deployment does not need to scan for old objects.
+For central provisioning, that has to be the deployment or stateful
+set that defines the provisioner pods. That way, provisioning can
+continue seamlessly when there are multiple instances with leadership
+election.
+
+For deployment with a daemon set, making the individual pod the owner
+is better than the daemon set as owner because then other instances do
+not need to figure out when to remove `CSIStoragePool` objects created
+on another node. It is also better than the node as owner because a
+driver might no longer be needed on a node although the node continues
+to exist (for example, via labels).
 
 While external-provisioner runs, it needs to update and potentially
 delete `CSIStoragePool` objects:
