@@ -628,14 +628,6 @@ The result is then stored in a different `CSIStoragePool` object for
 each identified pool, with a `NodeTopology` that selects the right
 nodes via their labels.
 
-Drivers that don't support topology can use
-`--enable-capacity=global-ephemeral`,
-`--enable-capacity=global-persistent` and/or
-`--enable-capacity=global-fallback`. Those are similar to their
-`topology-*` counterparts but without identifying pools and thus
-without `GetCapacityRequest.accessible_topology` The resulting
-`CSIStoragePool` objects then have neither `Nodes` nor `NodeSelector` set and
-thus apply to all nodes in the cluster.
 
 #### CSIStoragePool lifecycle
 
@@ -765,6 +757,15 @@ design](https://github.com/cybozu-go/topolvm/blob/master/docs/design.md#diagram)
 
 
 ## Alternatives
+
+### CSI drivers without topology support
+
+To simplify the implementation of external-provisioner, [topology
+support](https://kubernetes-csi.github.io/docs/topology.html) is
+expected from a CSI driver. A driver which does not really need
+topology support can add it simply by always returning the same static
+`NodeGetInfoResponse.AccessibleTopology`.
+
 
 ### Single capacity value
 
