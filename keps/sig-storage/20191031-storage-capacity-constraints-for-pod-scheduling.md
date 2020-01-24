@@ -229,9 +229,10 @@ availability, durability, performance and cost. For more information
 about this, see the [StoragePool API for Advanced Storage Placement
 KEP](https://github.com/kubernetes/enhancements/pull/1347).
 
-Storage pools as introduced in this KEP enable the creation of such
-operators by providing them the necessary information about storage in
-the cluster.
+The storage pool API as introduced in this KEP enables the creation of such
+operators. When combined with a CSI extension that allows a sidecar to
+list and query storage pools, even more information might become
+available, like health of a storage pool.
 
 ### Caching remaining capacity via the API server
 
@@ -769,9 +770,29 @@ A new test can be written which checks for `CSIStoragePool` objects,
 asks for pod scheduling with a volume that is too large, and then
 checks for events that describe the problem.
 
+### Graduation Criteria
+
+#### Alpha -> Beta Graduation
+
+- Gather feedback from developers and users
+- Re-evaluate API choices, considering:
+  - performance
+  - extensions of the API that may or may not be needed (like
+    [ignoring storage class
+    parameters](#storage-class-parameters-that-never-affect-capacity))
+- Tests are in Testgrid and linked in KEP
+
+#### Beta -> GA Graduation
+
+- 5 CSI drivers enabling the creation of `CSIStoragePool` data
+- 5 installs
+- More rigorous forms of testing e.g., downgrade tests and scalability tests
+- Allowing time for feedback
+
 ## Implementation History
 
 - Kubernetes 1.18: alpha (tentative)
+
 
 ## Drawbacks
 
