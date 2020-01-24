@@ -720,6 +720,25 @@ The specified volume size is compared against `MaximumVolumeSize` if
 available, otherwise `AvailableCapacity`. A pool which has neither is
 considered unusable at the moment and ignored.
 
+Each volume gets checked separately, independently of other volumes
+that are needed by the current pod or by volumes that are about to be
+created for other pods. Those scenarios remain problematic.
+
+Trying to model how different volumes affect capacity would be
+difficult. A "maximum volume size 10GiB" can mean that exactly one
+volume of that size can still be created or hundreds, so rejecting the
+node after one volume could be a false negative. With "available
+capacity 10GiB" it may or may not be possible to create two volumes of
+5GiB each, so accepting the node for two such volumes could be a false
+positive.
+
+More promising might be to add prioritization of nodes based on how
+much capacity they have left, thus spreading out storage usage evenly.
+
+Either way, the problem of recovering more gracefully from running out
+of storage after scheduling onto a node will have to be addressed
+eventually.
+
 ## Design Details
 
 ### Test Plan
