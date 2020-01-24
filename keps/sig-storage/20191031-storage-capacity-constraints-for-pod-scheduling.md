@@ -369,12 +369,10 @@ type CSIStoragePoolStatus struct {
 type CSIStorageByClass struct {
 	// The storage class name matches the name of some actual
 	// `StorageClass`, in which case the information applies when
-	// using that storage class for a volume. There are also two
-	// special names:
+	// using that storage class for a volume. There is also one
+	// special name:
 	// - <ephemeral> for storage used by ephemeral inline volumes (which
 	//   don't use a storage class)
-	// - <fallback> for storage that is the same regardless of the storage class;
-	//   it is applicable if there is no other, more specific entry
 	StorageClassName string `json:"storageClassName" protobuf:"bytes,1,name=storageClassName"`
 
 	// AvailableCapacity is the sum of all storage that may be provided by the
@@ -394,11 +392,6 @@ type CSIStorageByClass struct {
 }
 
 const (
-	// FallbackStorageClassName is used for a CSIStorage element which
-	// applies when there isn't a more specific element for the
-	// current storage class or ephemeral volume.
-	FallbackStorageClassName = "<fallback>"
-
 	// EphemeralStorageClassName is used for storage from which
 	// ephemeral volumes are allocated.
 	EphemeralStorageClassName = "<ephemeral>"
@@ -430,7 +423,7 @@ spec:
 status:
   classes:
   - maximumVolumeSize: 256G
-    storageClassName: <fallback>
+    storageClassName: some-storage-class
   nodeTopology:
     nodeSelectorTerms:
     - matchExpressions:
@@ -448,7 +441,7 @@ spec:
 status:
   classes:
   - maximumVolumeSize: 512G
-    storageClassName: <fallback>
+    storageClassName: some-storage-class
   nodeTopology:
     nodeSelectorTerms:
     - matchExpressions:
@@ -494,7 +487,7 @@ spec:
 status:
   classes:
   - maximumVolumeSize: 128G
-    storageClassName: <fallback>
+    storageClassName: some-storage-class
   nodeTopology:
     nodeSelectorTerms:
     - matchExpressions:
@@ -512,7 +505,7 @@ spec:
 status:
   classes:
   - maximumVolumeSize: 256G
-    storageClassName: <fallback>
+    storageClassName: some-storage-class
   nodeTopology:
     nodeSelectorTerms:
     - matchExpressions:
@@ -636,21 +629,11 @@ When `--enable-capacity=ephemeral` is used, it will call `GetCapacity`
 without parameters and create the special `<ephemeral>`
 `CSIStoragePoolByClass` entry.
 
-When `--enable-capacity=fallback` is used, it will also call without
-parameters but store the result in the special `<fallback>`
-`CSIStoragePoolByClass` entry.
-
 While technically these options are orthogonal, not all combinations
 make sense. The expected usage is:
 * A driver that only supports ephemeral volumes should use only
   `--enable-capacity=ephemeral`. Storage classes that might
   (accidentally?) be created for the driver will be ignored.
-* A driver where parameters have no effect on the result (for example,
-  because the only relevant field is the `fsType` and the capacity is
-  based on the underlying block device) should use
-  `--enable-capacity=fallback`. This avoids the overhead for
-  monitoring storage classes and creating one entry per class where
-  all classes would lead to the same capacity.
 * A driver where parameters have an effect should use `--enable-capacity=storageclasses`,
   combined with `--enable-capacity=ephemeral` if ephemeral volumes
   are supported.
@@ -815,6 +798,20 @@ expected from a CSI driver. A driver which does not really need
 topology support can add it simply by always returning the same static
 `NodeGetInfoResponse.AccessibleTopology`.
 
+### Storage class parameters that never affect capacity
+
+In the current proposal, `GetCapacity` will be called for every every
+storage class. This is extra work and will lead to redundant
+`CSIStoragePoolByClass` entries for CSI drivers where the storage
+class parameters have no effect.
+
+To handles this special case, a special `<fallback>` storage class
+name and a corresponding flag in external-provisioner could be
+introduced: if enabled by the CSI driver deployment, storage classes
+then would be ignored and the scheduler would use the special
+`<fallback>` entry to determine capacity.
+
+This was removed from an earlier draft of the KEP to simplify it.
 
 ### Single capacity value
 
@@ -922,12 +919,10 @@ type CSIStoragePool struct {
 type CSIStorageByClass struct {
 	// The storage class name matches the name of some actual
 	// `StorageClass`, in which case the information applies when
-	// using that storage class for a volume. There are also two
-	// special names:
+	// using that storage class for a volume. There is also one
+	// special name:
 	// - <ephemeral> for storage used by ephemeral inline volumes (which
 	//   don't use a storage class)
-	// - <fallback> for storage that is the same regardless of the storage class;
-	//   it is applicable if there is no other, more specific entry
 	StorageClassName string `json:"storageClassName" protobuf:"bytes,1,name=storageClassName"`
 
 	// Capacity is the size of the largest volume that currently can
@@ -938,11 +933,6 @@ type CSIStorageByClass struct {
 }
 
 const (
-	// FallbackStorageClassName is used for a CSIStorage element which
-	// applies when there isn't a more specific element for the
-	// current storage class or ephemeral volume.
-	FallbackStorageClassName = "<fallback>"
-
 	// EphemeralStorageClassName is used for storage from which
 	// ephemeral volumes are allocated.
 	EphemeralStorageClassName = "<ephemeral>"
@@ -974,13 +964,13 @@ status:
   storage:
   - classes:
     - capacity: 256G
-      storageClassName: <fallback>
+      storageClassName: some-storage-class
     name: node-1
     nodes:
     - node-1
   - classes:
     - capacity: 512G
-      storageClassName: <fallback>
+      storageClassName: some-storage-class
     name: node-2
     nodes:
     - node-2
@@ -1042,7 +1032,7 @@ status:
   storage:
   - classes:
     - capacity: 128G
-      storageClassName: <fallback>
+      storageClassName: some-storage-class
     name: region-east
     nodeTopology:
       nodeSelectorTerms:
@@ -1053,7 +1043,7 @@ status:
           - us-east-1
   - classes:
     - capacity: 256G
-      storageClassName: <fallback>
+      storageClassName: some-storage-class
     name: region-west
     nodeTopology:
       nodeSelectorTerms:
