@@ -28,17 +28,19 @@ see-also:
 - [Motivation](#motivation)
   - [Goals](#goals)
   - [Non-Goals](#non-goals)
-- [Proposal](#proposal)
   - [User Stories](#user-stories)
     - [Ephemeral PMEM volume for Redis](#ephemeral-pmem-volume-for-redis)
     - [Different LVM configurations](#different-lvm-configurations)
     - [Network attached storage](#network-attached-storage)
     - [Custom schedulers](#custom-schedulers)
     - [Operators for applications](#operators-for-applications)
+- [Proposal](#proposal)
   - [Caching remaining capacity via the API server](#caching-remaining-capacity-via-the-api-server)
   - [Identifying storage pools](#identifying-storage-pools)
   - [Size of ephemeral inline volumes](#size-of-ephemeral-inline-volumes)
   - [Pod scheduling](#pod-scheduling)
+  - [Data flow](#data-flow)
+- [Design Details](#design-details)
   - [API](#api)
     - [CSIStoragePool](#csistoragepool)
       - [Example: local storage](#example-local-storage)
@@ -52,12 +54,15 @@ see-also:
     - [Determining parameters](#determining-parameters)
     - [CSIStoragePool lifecycle](#csistoragepool-lifecycle)
   - [Using capacity information](#using-capacity-information)
-- [Design Details](#design-details)
   - [Test Plan](#test-plan)
+  - [Graduation Criteria](#graduation-criteria)
+    - [Alpha -&gt; Beta Graduation](#alpha---beta-graduation)
+    - [Beta -&gt; GA Graduation](#beta---ga-graduation)
 - [Implementation History](#implementation-history)
 - [Drawbacks](#drawbacks)
 - [Alternatives](#alternatives)
   - [CSI drivers without topology support](#csi-drivers-without-topology-support)
+  - [Storage class parameters that never affect capacity](#storage-class-parameters-that-never-affect-capacity)
   - [Single capacity value](#single-capacity-value)
   - [Node list](#node-list)
   - [CSIDriver.Status](#csidriverstatus)
@@ -168,8 +173,6 @@ reduce the risk of that happening.
   mirror vs. striped case) also for inline volumes. But this is outside
   the scope of this KEP.
 
-## Proposal
-
 ### User Stories
 
 #### Ephemeral PMEM volume for Redis
@@ -234,6 +237,8 @@ operators. When combined with a CSI extension that allows a sidecar to
 list and query storage pools, even more information might become
 available, like health of a storage pool.
 
+## Proposal
+
 ### Caching remaining capacity via the API server
 
 CSI defines the `GetCapacity` RPC call for the controller service to
@@ -281,6 +286,20 @@ volumes or persistent volumes with delayed binding. If the driver does
 not indicate that it supports capacity reporting, then the scheduler
 proceeds just as it does now, so nothing changes for existing CSI
 driver deployments.
+
+### Data flow
+
+Information about pools flow through different components:
+1. storage backend
+2. CSI driver
+3. external-provisioner: polls driver with `GetCapacity`, pushes to API server
+4. API server
+5. Kubernetes scheduler: watches `CSIStoragePool`, receives updates
+
+The first two a driver specific. The other steps are explained further
+below.
+
+## Design Details
 
 ### API
 
@@ -713,8 +732,6 @@ much capacity they have left, thus spreading out storage usage evenly.
 Either way, the problem of recovering more gracefully from running out
 of storage after scheduling onto a node will have to be addressed
 eventually.
-
-## Design Details
 
 ### Test Plan
 
