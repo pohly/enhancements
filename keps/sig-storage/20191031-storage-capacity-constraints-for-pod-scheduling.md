@@ -268,7 +268,10 @@ information about the size of an ephemeral inline volume and (as for
 persistent volumes) how much storage is still available.
 A new `CSIVolumeSource.fsSize` field needs to be added
 to expose the size in a vendor-agnostic way. Details for that are in
-https://github.com/kubernetes/enhancements/pull/1353.
+https://github.com/kubernetes/enhancements/pull/1353. Without that
+field, the scheduler does not know what the size of the ephemeral
+volume will be and thus wouldn't be able to check whether a node
+has enough capacity for the volume.
 
 ### Pod scheduling
 
