@@ -246,16 +246,14 @@ health of the pool.
 
 ### Identifying storage pools
 
-A method for identifying storage pools accessible via a CSI driver
-based on the existing topology information gets outlined below. The
-`external-provisioner` will be extended to handle the management of
-`CSIStoragePool` objects.
-
-For local storage in the node, there will be one such `CSIStoragePool`
-object per node and CSI driver on that node. For network attached
-storage, there will be one `CSIStoragePool` per CSI
+The external-provisioner will be extended to handle the management
+of `CSIStoragePool` objects. For local storage in the node, there will
+be one such `CSIStoragePool` object per node and CSI driver on that
+node. For network attached storage, there will be one `CSIStoragePool`
+per CSI
 [Topology](https://github.com/container-storage-interface/spec/blob/4731db0e0bc53238b93850f43ab05d9355df0fd9/lib/go/csi/csi.pb.go#L1662-L1691)
-and driver.
+and driver. However, how the external-provisioner discovers these pools
+is currently open.
 
 ### Size of ephemeral inline volumes
 
@@ -593,28 +591,21 @@ Normally, external-provisioner gets deployed together with a CSI
 controller service in a stateful set. That allows drivers to
 support persistent volumes without late binding.
 
-When deployed with `--enable-capacity=central`, external-provisioner
-determines storage pools based on the topology information provided by
-the driver on each node and gets capacity for the resulting pools from
-the driver's controller service that it is connected to.
+The intention is to enable a mode with `--enable-capacity=central`
+where external-provisioner somehow discovers storage pools and their
+associated topology segments.
 
-This relies on a feature of kubelet and one additional requirement for CSI
-driver deployments:
-- Every topology segment that a CSI node service reports in response
- to GetNodeInfo (for example, `example.com/zone`: `Z1` +
- `example.com/rack`: `R3`) is copied into node labels by kubelet.
-- All keys must have the same prefix (`example.com` in that example)
-  and external-provisioner is given that prefix with the
-  `--topology-prefix=example.com` parameter.
+Once it has that information, it can call `GetCapacity` for those
+segments. It can create a node selector which uses the labels that
+kubelet adds to the `Node` object based on topology segments reported
+for each node in `GetNodeInfoResponse.AccessibleTopology`. The result
+is then stored in one `CSIStoragePool` object per pool with that node
+selector to define the nodes that have access.
 
-With that parameter, external-provisioner can reconstruct topology segments as follows:
-- For each node, find the labels with that prefix and combine them
-  into a `csi.Topology` instance.
-- Remove duplicates.
-
-The result is then stored in a different `CSIStoragePool` object for
-each identified pool, with a `NodeTopology` that selects the right
-nodes via their labels.
+However, how to identify storage pools for network-attached storage in
+this mode is currently open.  For CSI drivers which support central
+provisioning of node-local storage (TopoLVM, PMEM-CSI), a flag can
+be added that enables the use of one pool per node.
 
 #### Determining parameters
 
@@ -775,6 +766,7 @@ checks for events that describe the problem.
 #### Alpha -> Beta Graduation
 
 - Gather feedback from developers and users
+- Support non-local storage
 - Re-evaluate API choices, considering:
   - performance
   - extensions of the API that may or may not be needed (like
