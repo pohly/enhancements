@@ -29,7 +29,7 @@ see-also:
   - [Goals](#goals)
   - [Non-Goals](#non-goals)
   - [User Stories](#user-stories)
-    - [Ephemeral PMEM volume for Redis](#ephemeral-pmem-volume-for-redis)
+    - [Ephemeral PMEM volume for Redis or memcached](#ephemeral-pmem-volume-for-redis-or-memcached)
     - [Different LVM configurations](#different-lvm-configurations)
     - [Network attached storage](#network-attached-storage)
     - [Custom schedulers](#custom-schedulers)
@@ -175,13 +175,13 @@ reduce the risk of that happening.
 
 ### User Stories
 
-#### Ephemeral PMEM volume for Redis
+#### Ephemeral PMEM volume for Redis or memcached
 
-A [modified Redis server](https://github.com/pmem/redis) can use
-[PMEM](https://pmem.io/) via
-[memkind](http://memkind.github.io/memkind/) as DRAM replacement with
-higher capacity and lower cost at almost the same performance. When it
-starts, all old data is discarded, so an inline ephemeral volume is a
+A [modified Redis server](https://github.com/pmem/redis) and the upstream
+version of [memcached](https://memcached.org/blog/persistent-memory/)
+can use [PMEM](https://pmem.io/) as DRAM replacement with
+higher capacity and lower cost at almost the same performance. When they
+start, all old data is discarded, so an inline ephemeral volume is a
 suitable abstraction for declaring the need for a volume that is
 backed by PMEM and provided by
 [PMEM-CSI](https://github.com/intel/pmem-csi). But PMEM is a resource
