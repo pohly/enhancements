@@ -266,16 +266,19 @@ CSI drivers that allocate storage from kubelet's root directory are
 covered by the [local ephemeral storage
 feature](https://kubernetes.io/docs/concepts/configuration/manage-compute-resources-container/#local-ephemeral-storage).
 
-This KEP is for CSI drivers that allocate volumes of a certain size
-from somewhere else. In that case, Kubernetes has currently no
-information about the size of an ephemeral inline volume and (as for
-persistent volumes) how much storage is still available.
-A new `CSIVolumeSource.fsSize` field needs to be added
-to expose the size in a vendor-agnostic way. Details for that are in
-https://github.com/kubernetes/enhancements/pull/1353. Without that
-field, the scheduler does not know what the size of the ephemeral
-volume will be and thus wouldn't be able to check whether a node
-has enough capacity for the volume.
+For CSI drivers that allocate volumes of a certain size from somewhere
+else, one possibility would be to define `CSIVolumeSource.fsSize` as a
+new field that exposes the size in a vendor-agnostic way. This field
+then can be used to make scheduling decisions. Details for that are in
+https://github.com/kubernetes/enhancements/pull/1353.
+
+Another possibility is to add the ability to define a full persistent
+volume inside the pod spec and then provision it like normal
+persistent volumes, with size and storage class support. No KEP exists
+for this at the moment.
+
+This needs to be sorted out before this feature can move from alpha to
+beta.
 
 ### Pod scheduling
 
