@@ -341,8 +341,7 @@ type CSIStoragePoolSpec struct {
 // CSIStoragePoolStatus contains runtime information about a CSIStoragePool.
 //
 // A pool might only be accessible from a subset of the nodes in the
-// cluster. That subset can be identified either via NodeTopology or
-// Nodes, but not both. If neither is set, the pool is assumed
+// cluster as identified by NodeTopology. If not set, the pool is assumed
 // to be available in the entire cluster.
 //
 // It is expected to be extended with other
@@ -355,13 +354,6 @@ type CSIStoragePoolStatus struct {
 	// only for nodes matching certain criteria.
 	// +optional
 	NodeTopology *v1.NodeSelector
-
-	// Nodes can be used to describe a storage pool that is available
-	// only for certain nodes in the cluster.
-	//
-	// +listType=set
-	// +optional
-	Nodes []string
 
 	// Some information, like the actual usable capacity, may
 	// depend on the storage class used for volumes.
