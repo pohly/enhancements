@@ -50,7 +50,8 @@ see-also:
   - [Updating capacity information with external-provisioner](#updating-capacity-information-with-external-provisioner)
     - [Available capacity vs. maximum volume size](#available-capacity-vs-maximum-volume-size)
     - [Without central controller](#without-central-controller)
-    - [With central provisioning](#with-central-provisioning)
+    - [With central provisioning, one pool per node](#with-central-provisioning-one-pool-per-node)
+    - [With central provisioning, generic solution](#with-central-provisioning-generic-solution)
     - [Determining parameters](#determining-parameters)
     - [CSIStoragePool lifecycle](#csistoragepool-lifecycle)
   - [Using capacity information](#using-capacity-information)
@@ -599,27 +600,19 @@ to the daemon set and enable the per-node capacity tracking with
 The resulting `CSIStoragePool` objects then use a node selector for
 one node.
 
-#### With central provisioning
+#### With central provisioning, one pool per node
 
-Normally, external-provisioner gets deployed together with a CSI
-controller service in a stateful set. That allows drivers to
-support persistent volumes without late binding.
+For central provisioning, external-provisioner gets deployed together
+with a CSI controller service. When `--enable-capacity=per-node` is
+used, it will create one storage pool per node, with the topology from
+the `CSINode` entry for the CSI driver. For that it needs to watch the
+`CSINode` objects.
 
-The intention is to enable a mode with `--enable-capacity=central`
-where external-provisioner somehow discovers storage pools and their
-associated topology segments.
+#### With central provisioning, generic solution
 
-Once it has that information, it can call `GetCapacity` for those
-segments. It can create a node selector which uses the labels that
-kubelet adds to the `Node` object based on topology segments reported
-for each node in `GetNodeInfoResponse.AccessibleTopology`. The result
-is then stored in one `CSIStoragePool` object per pool with that node
-selector to define the nodes that have access.
-
-However, how to identify storage pools for network-attached storage in
-this mode is currently open.  For CSI drivers which support central
-provisioning of node-local storage (TopoLVM, PMEM-CSI), a flag can
-be added that enables the use of one pool per node.
+For all other cases, a new CSI call to enumerate storage pools will be
+needed. At a minimum, that call must return a list of entries where
+each entry has the topology segments for the corresponding pool.
 
 #### Determining parameters
 
@@ -630,6 +623,13 @@ When `--enable-capacity=storageclasses` is used, it will iterate over
 all storage classes defined for the driver and call `GetCapacity` once
 per class with the parameters defined in the class. The result will be
 stored in one `CSIStoragePoolByClass` per storage class.
+
+If the current combination of topology segment for a pool and storage
+class parameters do not make sense, then a driver must return "zero
+capacity" or an error, in which case external-provisioner will skip
+this combination. This covers the case where some storage class
+parameter selects a certain storage pool, because information will
+then only be recorded for that pool.
 
 When `--enable-capacity=ephemeral` is used, it will call `GetCapacity`
 without parameters and create the special `<ephemeral>`
