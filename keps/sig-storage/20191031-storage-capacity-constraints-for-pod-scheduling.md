@@ -64,7 +64,7 @@ see-also:
 - [Alternatives](#alternatives)
   - [CSI drivers without topology support](#csi-drivers-without-topology-support)
   - [Storage class parameters that never affect capacity](#storage-class-parameters-that-never-affect-capacity)
-  - [Single capacity value](#single-capacity-value)
+  - [Multiple capacity values](#multiple-capacity-values)
   - [Node list](#node-list)
   - [CSIDriver.Status](#csidriverstatus)
     - [Example: local storage](#example-local-storage-1)
@@ -372,14 +372,6 @@ type CSIStoragePoolStatus struct {
 
 // CSIStorageByClass contains information that applies to one storage
 // pool of a CSI driver when using a certain storage class.
-//
-// Both AvailableCapacity and MaximumVolumeSize are optional. If both
-// are provided, then the Kubernetes scheduler compares the size of
-// a volume against MaximumVolumeSize to determine whether the
-// volume has a chance of being created. If only AvailableCapacity is
-// set, then the scheduler will use that, which may be a good enough
-// approximation. If neither is set, then the scheduler will ignore
-// the pool.
 type CSIStorageByClass struct {
 	// The storage class name matches the name of some actual
 	// `StorageClass`, in which case the information applies when
@@ -389,20 +381,13 @@ type CSIStorageByClass struct {
 	//   don't use a storage class)
 	StorageClassName string `json:"storageClassName" protobuf:"bytes,1,name=storageClassName"`
 
-	// AvailableCapacity is the sum of all storage that may be provided by the
-	// CSI driver through the given storage class. There is no guarantee that
-	// a single volume really can use all of that space. For example, fragmentation
-	// might prevent creating such a volume.
+	// Capacity is the value reported by the CSI driver in its GetCapacityResponse.
+    // Depending on how the driver is implemented, this might be the total
+    // size of the available storage which is only available when allocating
+    // multiple smaller volumes ("total available capacity") or the
+    // actual size that a volume may have ("maximum volume size").
 	// +optional
-	AvailableCapacity *resource.Quantity `json:"availableCapacity,omitempty" protobuf:"bytes,2,opt,name=availableCapacity"`
-
-	// MaximumVolumeSize is the size of the largest volume that currently can
-	// be created. This is a best-effort guess and even volumes
-	// of that size might not get created successfully, either because
-	// conditions changed between providing this information and attempting
-	// to create a volume or because the guess was not accurate enough.
-	// +optional
-	MaximumVolumeSize *resource.Quantity `json:"maximumVolumeSize,omitempty" protobuf:"bytes,3,opt,name=maximumVolumeSize"`
+	Capacity *resource.Quantity `json:"capacity,omitempty" protobuf:"bytes,2,opt,name=capacity"`
 }
 
 const (
@@ -436,7 +421,7 @@ spec:
   driverName: hostpath.csi.k8s.io
 status:
   classes:
-  - maximumVolumeSize: 256G
+  - capacity: 256G
     storageClassName: some-storage-class
   nodeTopology:
     nodeSelectorTerms:
@@ -454,7 +439,7 @@ spec:
   driverName: hostpath.csi.k8s.io
 status:
   classes:
-  - maximumVolumeSize: 512G
+  - capacity: 512G
     storageClassName: some-storage-class
   nodeTopology:
     nodeSelectorTerms:
@@ -476,9 +461,9 @@ spec:
   driverName: lvm
 status:
   classes:
-  - maximumVolumeSize: 256G
+  - capacity: 256G
     storageClassName: striped
-  - maximumVolumeSize: 128G
+  - capacity: 128G
     storageClassName: mirrored
   nodeTopology:
     nodeSelectorTerms:
@@ -500,7 +485,7 @@ spec:
   driverName: pd.csi.storage.gke.io
 status:
   classes:
-  - maximumVolumeSize: 128G
+  - capacity: 128G
     storageClassName: some-storage-class
   nodeTopology:
     nodeSelectorTerms:
@@ -518,7 +503,7 @@ spec:
   driverName: pd.csi.storage.gke.io
 status:
   classes:
-  - maximumVolumeSize: 256G
+  - capacity: 256G
     storageClassName: some-storage-class
   nodeTopology:
     nodeSelectorTerms:
@@ -569,18 +554,12 @@ The CSI spec up to and including the current version 1.2 just
 specifies that ["the available
 capacity"](https://github.com/container-storage-interface/spec/blob/314ac542302938640c59b6fb501c635f27015326/lib/go/csi/csi.pb.go#L2548-L2554)
 is to be returned by the driver. It is left open whether that means
-that a volume of that size can be created.
-
-This KEP introduces the more precise definition of a "maximum volume
-size". Unless told otherwise, the external-provisioner assumes that
-the `GetCapacityResponse` is the sum of all currently available
-storage and then sets `CSIStorageByClass.AvailableCapacity` instead of
-`CSIStorageByClass.MaximumVolumeSize`. A CSI driver deployment can use
-`--capacity-is-maximum-volume-size=true` to change that, in which
-case only `CSIStorageByClass.MaximumVolumeSize` will be set.
-
-An extension of the CSI spec would be needed to enable a CSI driver to
-report both values.
+that a volume of that size can be created. This KEP uses the reported
+capacity to rule out pools which clearly have insufficient storage
+because the reported capacity is smaller than the size of a
+volume. This will work better when CSI drivers implement `GetCapacity`
+such that they consider constraints like fragmentation and report the
+size that the largest volume can have at the moment.
 
 #### Without central controller
 
@@ -728,18 +707,18 @@ The lookup sequence will be:
   (driver, accessible by node) and sufficient capacity for the
   volume attributes (storage class vs. ephemeral)
 
-The specified volume size is compared against `MaximumVolumeSize` if
-available, otherwise `AvailableCapacity`. A pool which has neither is
-considered unusable at the moment and ignored.
+The specified volume size is compared against `Capacity` if
+available. A pool which has no reported capacity or a capacity that is
+too small is considered unusable at the moment and ignored.
 
 Each volume gets checked separately, independently of other volumes
 that are needed by the current pod or by volumes that are about to be
 created for other pods. Those scenarios remain problematic.
 
 Trying to model how different volumes affect capacity would be
-difficult. A "maximum volume size 10GiB" can mean that exactly one
-volume of that size can still be created or hundreds, so rejecting the
-node after one volume could be a false negative. With "available
+difficult. If the capacity represents "maximum volume size 10GiB", it may be possible
+to create exactly one such volume or several, so rejecting the
+pool after one volume could be a false negative. With "available
 capacity 10GiB" it may or may not be possible to create two volumes of
 5GiB each, so accepting the node for two such volumes could be a false
 positive.
@@ -749,7 +728,7 @@ much capacity they have left, thus spreading out storage usage evenly.
 
 Either way, the problem of recovering more gracefully from running out
 of storage after scheduling onto a node will have to be addressed
-eventually.
+eventually. Details for that are in https://github.com/kubernetes/enhancements/pull/1703.
 
 ### Test Plan
 
@@ -861,12 +840,12 @@ then would be ignored and the scheduler would use the special
 
 This was removed from an earlier draft of the KEP to simplify it.
 
-### Single capacity value
+### Multiple capacity values
 
-Some earlier draft only had a single `Capacity` value, with a
-definition that this is the "maximum volume size". This was replaced
-by `AvailableCapacity` and `MaximumVolumeSize` to avoid potential
-confusion and make the API more flexible.
+Some earlier draft specified `AvailableCapacity` and
+`MaximumVolumeSize` in the API to avoid the ambiguity in the CSI
+API. This was deemed unnecessary because it would have made no
+difference in practice for the use case in this KEP.
 
 ### Node list
 
@@ -1028,7 +1007,7 @@ status:
 
 This fictional LVM CSI driver can either use 256GB of local disk space
 for striped or mirror volumes. Mirrored volumes need twice the amount
-of local disk space, so the maximum volume size is halved:
+of local disk space, so the capacity is halved:
 
 ```
 apiVersion: storage.k8s.io/v1beta1
