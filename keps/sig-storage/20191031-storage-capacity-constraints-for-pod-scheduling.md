@@ -677,7 +677,7 @@ delete `CSIStoragePool` objects:
 - when volumes are resized or snapshots are created or deleted (for persistent volumes)
 - periodically, to detect changes in the underlying backing store (all cases)
 
-Because sidecars are currently separated, external-snapshotter is
+Because sidecars are currently separated, external-provisioner is
 unaware of resizing and snapshotting. It also not involved with
 ephemeral inline volumes. The periodic polling will catch up
 with changes caused by those operations.
