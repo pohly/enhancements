@@ -50,8 +50,8 @@ see-also:
   - [Updating capacity information with external-provisioner](#updating-capacity-information-with-external-provisioner)
     - [Available capacity vs. maximum volume size](#available-capacity-vs-maximum-volume-size)
     - [Without central controller](#without-central-controller)
-    - [With central provisioning, one pool per node](#with-central-provisioning-one-pool-per-node)
-    - [With central provisioning, generic solution](#with-central-provisioning-generic-solution)
+    - [With central controller](#with-central-controller)
+    - [With central controller, generic solution](#with-central-controller-generic-solution)
     - [Determining parameters](#determining-parameters)
     - [CSIStoragePool lifecycle](#csistoragepool-lifecycle)
   - [Using capacity information](#using-capacity-information)
@@ -600,15 +600,38 @@ to the daemon set and enable the per-node capacity tracking with
 The resulting `CSIStoragePool` objects then use a node selector for
 one node.
 
-#### With central provisioning, one pool per node
+#### With central controller
 
 For central provisioning, external-provisioner gets deployed together
-with a CSI controller service. When `--enable-capacity=per-node` is
-used, it will create one storage pool per node, with the topology from
-the `CSINode` entry for the CSI driver. For that it needs to watch the
-`CSINode` objects.
+with a CSI controller service and capacity reporting gets enabled with
+`--enable-capacity=central`. In this mode, CSI drivers must report
+topology information in `NodeGetInfoResponse.accessible_topology` that
+matches the storage pool(s) that it has access to, with granularity
+that matches the most restrictive pool.
 
-#### With central provisioning, generic solution
+For example, if the driver runs in a node with zone/region/rack
+topology and has access to one per-zone pool and one per-zone/region
+pool, then the driver should report the zone/region of the second pool
+as its topology.
+
+This is a slight deviation from the CSI spec, which defines that
+"`accessible_topology` specifies where the *node* is accessible
+from". For node-local storage there is no difference, but for
+network-attached storage there might be one.
+
+Assuming that a CSI driver meets the above requirement and enables
+this mode, external-provisioner then can identify pools as follows:
+- iterate over all `CSINode` objects and search for
+  `CSINodeDriver` information for the CSI driver,
+- compute the union of the topology segments from these
+  `CSINodeDriver` entries.
+
+For each entry in that union, potentially one `CSIStoragePool` is
+created with a node selector that uses the topology key/value pairs as
+node labels. That works because kubelet automatically labels nodes
+based on the CSI drivers that run on that node.
+
+#### With central controller, generic solution
 
 For all other cases, a new CSI call to enumerate storage pools will be
 needed. At a minimum, that call must return a list of entries where
