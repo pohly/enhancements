@@ -263,9 +263,9 @@ is currently open.
 
 ### Size of ephemeral inline volumes
 
-CSI drivers that allocate storage from kubelet's root directory are
-covered by the [local ephemeral storage
-feature](https://kubernetes.io/docs/concepts/configuration/manage-compute-resources-container/#local-ephemeral-storage).
+Storage that CSI drivers allocate from kubelet's root directory is not
+tracked at the moment and assumed to be so small that it doesn't need
+to be accounted for.
 
 For CSI drivers that allocate volumes of a certain size from somewhere
 else, one possibility would be to define `CSIVolumeSource.fsSize` as a
@@ -275,8 +275,8 @@ https://github.com/kubernetes/enhancements/pull/1353.
 
 Another possibility is to add the ability to define a full persistent
 volume inside the pod spec and then provision it like normal
-persistent volumes, with size and storage class support. No KEP exists
-for this at the moment.
+persistent volumes, with size and storage class support, as defined in
+https://github.com/kubernetes/enhancements/pull/1701.
 
 This needs to be sorted out before this feature can move from alpha to
 beta.
