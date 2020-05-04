@@ -91,12 +91,14 @@ see-also:
 
 ## Summary
 
-There are two types of volumes that are getting created after scheduling a pod onto a node:
+There are two types of volumes that are getting created after making a scheduling
+decision for a pod:
 - [ephemeral inline
-  volumes](https://kubernetes-csi.github.io/docs/ephemeral-local-volumes.html)
+  volumes](https://kubernetes-csi.github.io/docs/ephemeral-local-volumes.html) -
+  a pod has been permanently scheduled onto a node
 - persistent volumes with [delayed
   binding](https://kubernetes.io/docs/concepts/storage/storage-classes/#volume-binding-mode)
-  (`WaitForFirstConsumer`)
+  (`WaitForFirstConsumer`) - a node has been selected tentatively
 
 In both cases the Kubernetes scheduler currently picks a node without
 knowing whether the storage system has enough capacity left for
@@ -204,7 +206,7 @@ class and its parameters.
 In contrast to local storage, network attached storage can be made
 available on more than just one node. However, for technical reasons
 (high-speed network for data transfer inside a single data center) or
-political reasons (data must only be stored and processed in a single
+regularity reasons (data must only be stored and processed in a single
 jurisdication) availability may still be limited to a subset of the
 nodes in a cluster.
 
@@ -271,7 +273,7 @@ For CSI drivers that allocate volumes of a certain size from somewhere
 else, one possibility would be to define `CSIVolumeSource.fsSize` as a
 new field that exposes the size in a vendor-agnostic way. This field
 then can be used to make scheduling decisions. Details for that are in
-https://github.com/kubernetes/enhancements/pull/1353.
+https://github.com/kubernetes/enhancements/pull/1409.
 
 Another possibility is to add the ability to define a full persistent
 volume inside the pod spec and then provision it like normal
@@ -780,7 +782,8 @@ checks for events that describe the problem.
 #### Alpha -> Beta Graduation
 
 - Gather feedback from developers and users
-- Support non-local storage
+- Integration with [Cluster Autoscaler](https://github.com/kubernetes/autoscaler)
+- Generic solution for identifying storage pools
 - Re-evaluate API choices, considering:
   - performance
   - extensions of the API that may or may not be needed (like
@@ -797,7 +800,7 @@ checks for events that describe the problem.
 
 ## Implementation History
 
-- Kubernetes 1.18: alpha (tentative)
+- Kubernetes 1.19: alpha (tentative)
 
 
 ## Drawbacks
