@@ -489,7 +489,7 @@ status:
   nodeTopology:
     nodeSelectorTerms:
     - matchExpressions:
-      - key: failure-domain.beta.kubernetes.io/region
+      - key: topology.kubernetes.io/region
         operator: In
         values:
         - us-east-1
@@ -507,7 +507,7 @@ status:
   nodeTopology:
     nodeSelectorTerms:
     - matchExpressions:
-      - key: failure-domain.beta.kubernetes.io/region
+      - key: topology.kubernetes.io/region
         operator: In
         values:
         - us-west-1
@@ -1064,7 +1064,7 @@ status:
     nodeTopology:
       nodeSelectorTerms:
       - matchExpressions:
-        - key: failure-domain.beta.kubernetes.io/region
+        - key: topology.kubernetes.io/region
           operator: In
           values:
           - us-east-1
@@ -1075,7 +1075,7 @@ status:
     nodeTopology:
       nodeSelectorTerms:
       - matchExpressions:
-        - key: failure-domain.beta.kubernetes.io/region
+        - key: topology.kubernetes.io/region
           operator: In
           values:
           - us-west-1
