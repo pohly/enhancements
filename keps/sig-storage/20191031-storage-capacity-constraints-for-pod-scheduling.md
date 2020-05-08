@@ -36,10 +36,9 @@ see-also:
     - [Operators for applications](#operators-for-applications)
 - [Proposal](#proposal)
   - [Caching remaining capacity via the API server](#caching-remaining-capacity-via-the-api-server)
-  - [Identifying storage pools](#identifying-storage-pools)
-  - [Size of ephemeral inline volumes](#size-of-ephemeral-inline-volumes)
+  - [Gathering capacity information](#gathering-capacity-information)
   - [Pod scheduling](#pod-scheduling)
-  - [Data flow](#data-flow)
+  - [Size of ephemeral inline volumes](#size-of-ephemeral-inline-volumes)
 - [Design Details](#design-details)
   - [API](#api)
     - [CSIStoragePool](#csistoragepool)
@@ -244,24 +243,44 @@ available, like health of a storage pool.
 
 ### Caching remaining capacity via the API server
 
-CSI defines the `GetCapacity` RPC call for the controller service to
-report information about the current capacity but it's not accessible
-in the Kubernetes scheduler. A new type `CSIStoragePool` type gets
-added to store the result of the `GetCapacity` calls for one storage
-pool in the API server and thus make it available to the scheduler. In
-the future it might get extended to also store other information like
-health of the pool.
+The Kubernetes scheduler cannot talk directly to the CSI drivers to
+retrieve capacity information because CSI drivers typically only
+expose a local Unix domain socket and are not necessarily running on
+the same host as the scheduler(s).
 
-### Identifying storage pools
+The key approach in this proposal for solving this is to gather
+capacity information, store it in the API server, and then use that
+information in the scheduler. That information then flows
+through different components:
+1. storage backend
+2. CSI driver
+3. Kubernetes-CSI sidecar
+4. API server
+5. Kubernetes scheduler
 
-The external-provisioner will be extended to handle the management
-of `CSIStoragePool` objects. For local storage in the node, there will
-be one such `CSIStoragePool` object per node and CSI driver on that
-node. For network attached storage, there will be one `CSIStoragePool`
-per CSI
-[Topology](https://github.com/container-storage-interface/spec/blob/4731db0e0bc53238b93850f43ab05d9355df0fd9/lib/go/csi/csi.pb.go#L1662-L1691)
-and driver. However, how the external-provisioner discovers these pools
-is currently open.
+The first two a driver specific. The sidecar will be provided by
+Kubernetes-CSI, but how it is used is determined when deploying the
+CSI driver. Steps 3 to 5 are explained below.
+
+### Gathering capacity information
+
+A sidecar, external-provisioner in this proposal, will be extended to
+handle the management of the new objects. This follows the normal
+approach that integration into Kubernetes is managed as part of the
+CSI driver deployment, ideally without having to modify the CSI driver
+itself. This will work without changes for some storage systems while
+others may have to support [a new CSI API
+call](#with-central-controller-generic-solution).
+
+### Pod scheduling
+
+The Kubernetes scheduler watches the capacity information and
+excludes nodes with insufficient remaining capacity when it comes to
+making scheduling decisions for a pod which uses ephemeral inline
+volumes or persistent volumes with delayed binding. If the driver does
+not indicate that it supports capacity reporting, then the scheduler
+proceeds just as it does now, so nothing changes for existing CSI
+driver deployments.
 
 ### Size of ephemeral inline volumes
 
@@ -282,28 +301,6 @@ https://github.com/kubernetes/enhancements/pull/1701.
 
 This needs to be sorted out before this feature can move from alpha to
 beta.
-
-### Pod scheduling
-
-The Kubernetes scheduler monitors `CSIStoragePool` objects and
-excludes nodes with insufficient remaining capacity when it comes to
-making scheduling decisions for a pod which uses ephemeral inline
-volumes or persistent volumes with delayed binding. If the driver does
-not indicate that it supports capacity reporting, then the scheduler
-proceeds just as it does now, so nothing changes for existing CSI
-driver deployments.
-
-### Data flow
-
-Information about pools flow through different components:
-1. storage backend
-2. CSI driver
-3. external-provisioner: polls driver with `GetCapacity`, pushes to API server
-4. API server
-5. Kubernetes scheduler: watches `CSIStoragePool`, receives updates
-
-The first two a driver specific. The other steps are explained further
-below.
 
 ## Design Details
 
