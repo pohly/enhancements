@@ -205,7 +205,7 @@ class and its parameters.
 In contrast to local storage, network attached storage can be made
 available on more than just one node. However, for technical reasons
 (high-speed network for data transfer inside a single data center) or
-regularity reasons (data must only be stored and processed in a single
+regulatory reasons (data must only be stored and processed in a single
 jurisdication) availability may still be limited to a subset of the
 nodes in a cluster.
 
@@ -258,7 +258,7 @@ through different components:
 4. API server
 5. Kubernetes scheduler
 
-The first two a driver specific. The sidecar will be provided by
+The first two are driver specific. The sidecar will be provided by
 Kubernetes-CSI, but how it is used is determined when deploying the
 CSI driver. Steps 3 to 5 are explained below.
 
