@@ -351,6 +351,11 @@ version will prevent pods from starting.
       - kube-controller-manager
       - kubelet
 
+* **Does enabling the feature change any default behavior?**
+  If users are allowed to create pods but not PVCs, then generic inline volumes
+  grants them permission to create PVCs indirectly. Cluster admins must take
+  that into account in their permission model.
+
 * **Can the feature be disabled once it has been enabled (i.e. can we rollback
   the enablement)?**
   Yes, by disabling the feature gates. Existing pods will continue to run and
@@ -379,6 +384,10 @@ _This section must be completed when targeting beta graduation to a release._
   Describe manual testing that was done and the outcomes.
   Longer term, we may want to require automated upgrade/rollback tests, but we
   are missing a bunch of machinery and tooling and do that now.
+
+* **Is the rollout accompanied by any deprecations and/or removals of features,
+  APIs, fields of API types, flags, etc.?**
+  No.
 
 ### Monitoring requirements
 
