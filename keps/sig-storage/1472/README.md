@@ -1,23 +1,3 @@
----
-title: Storage Capacity Constraints for Pod Scheduling
-authors:
-  - "@pohly"
-  - "@cofyc"
-owning-sig: sig-storage
-participating-sigs:
-  - sig-scheduling
-reviewers:
-  - "@saad-ali"
-approvers:
-  - "@saad-ali"
-editor: "@pohly"
-creation-date: 2019-09-19
-last-updated: 2020-01-17
-status: implementable
-see-also:
-  - "https://docs.google.com/document/d/1WtX2lRJjZ03RBdzQIZY3IOvmoYiF5JxDX35-SsCIAfg"
----
-
 # Storage Capacity Constraints for Pod Scheduling
 
 ## Table of Contents
@@ -33,15 +13,13 @@ see-also:
     - [Different LVM configurations](#different-lvm-configurations)
     - [Network attached storage](#network-attached-storage)
     - [Custom schedulers](#custom-schedulers)
-    - [Operators for applications](#operators-for-applications)
 - [Proposal](#proposal)
   - [Caching remaining capacity via the API server](#caching-remaining-capacity-via-the-api-server)
   - [Gathering capacity information](#gathering-capacity-information)
   - [Pod scheduling](#pod-scheduling)
-  - [Size of ephemeral inline volumes](#size-of-ephemeral-inline-volumes)
 - [Design Details](#design-details)
   - [API](#api)
-    - [CSIStoragePool](#csistoragepool)
+    - [CSIStorageCapacity](#csistoragecapacity)
       - [Example: local storage](#example-local-storage)
       - [Example: affect of storage classes](#example-affect-of-storage-classes)
       - [Example: network attached storage](#example-network-attached-storage)
@@ -52,12 +30,21 @@ see-also:
     - [With central controller](#with-central-controller)
     - [With central controller, generic solution](#with-central-controller-generic-solution)
     - [Determining parameters](#determining-parameters)
-    - [CSIStoragePool lifecycle](#csistoragepool-lifecycle)
+    - [CSIStorageCapacity lifecycle](#csistoragecapacity-lifecycle)
   - [Using capacity information](#using-capacity-information)
   - [Test Plan](#test-plan)
   - [Graduation Criteria](#graduation-criteria)
     - [Alpha -&gt; Beta Graduation](#alpha---beta-graduation)
     - [Beta -&gt; GA Graduation](#beta---ga-graduation)
+  - [Upgrade / Downgrade Strategy](#upgrade--downgrade-strategy)
+  - [Version Skew Strategy](#version-skew-strategy)
+- [Production Readiness Review Questionnaire](#production-readiness-review-questionnaire)
+  - [Feature enablement and rollback](#feature-enablement-and-rollback)
+  - [Rollout, Upgrade and Rollback Planning](#rollout-upgrade-and-rollback-planning)
+  - [Monitoring requirements](#monitoring-requirements)
+  - [Dependencies](#dependencies)
+  - [Scalability](#scalability)
+  - [Troubleshooting](#troubleshooting)
 - [Implementation History](#implementation-history)
 - [Drawbacks](#drawbacks)
 - [Alternatives](#alternatives)
@@ -69,24 +56,50 @@ see-also:
     - [Example: local storage](#example-local-storage-1)
     - [Example: affect of storage classes](#example-affect-of-storage-classes-1)
     - [Example: network attached storage](#example-network-attached-storage-1)
+  - [CSIStoragePool](#csistoragepool)
+      - [Example: local storage](#example-local-storage-2)
+      - [Example: affect of storage classes](#example-affect-of-storage-classes-2)
+      - [Example: network attached storage](#example-network-attached-storage-2)
   - [Prior work](#prior-work)
 <!-- /toc -->
 
 ## Release Signoff Checklist
 
-- [ ] kubernetes/enhancements issue in release milestone, which links
-      to KEP (this should be a link to the KEP location in
-      kubernetes/enhancements, not the initial KEP PR)
-- [ ] KEP approvers have set the KEP status to `implementable`
-- [ ] Design details are appropriately documented
-- [ ] Test plan is in place, giving consideration to SIG Architecture and SIG Testing input
-- [ ] Graduation criteria is in place
+<!--
+**ACTION REQUIRED:** In order to merge code into a release, there must be an
+issue in [kubernetes/enhancements] referencing this KEP and targeting a release
+milestone **before the [Enhancement Freeze](https://git.k8s.io/sig-release/releases)
+of the targeted release**.
+
+For enhancements that make changes to code or processes/procedures in core
+Kubernetes i.e., [kubernetes/kubernetes], we require the following Release
+Signoff checklist to be completed.
+
+Check these off as they are completed for the Release Team to track. These
+checklist items _must_ be updated for the enhancement to be released.
+-->
+
+Items marked with (R) are required *prior to targeting to a milestone / release*.
+
+- [ ] (R) Enhancement issue in release milestone, which links to KEP dir in [kubernetes/enhancements] (not the initial KEP PR)
+- [ ] (R) KEP approvers have approved the KEP status as `implementable`
+- [ ] (R) Design details are appropriately documented
+- [ ] (R) Test plan is in place, giving consideration to SIG Architecture and SIG Testing input
+- [ ] (R) Graduation criteria is in place
+- [ ] (R) Production readiness review completed
+- [ ] Production readiness review approved
 - [ ] "Implementation History" section is up-to-date for milestone
-- [ ] User-facing documentation has been created in
-      [kubernetes/website], for publication to [kubernetes.io]
-- [ ] Supporting documentation e.g., additional design documents,
-      links to mailing list discussions/SIG meetings, relevant
-      PRs/issues, release notes
+- [ ] User-facing documentation has been created in [kubernetes/website], for publication to [kubernetes.io]
+- [ ] Supporting documentation e.g., additional design documents, links to mailing list discussions/SIG meetings, relevant PRs/issues, release notes
+
+<!--
+**Note:** This checklist is iterative and should be reviewed and updated every time this enhancement is being considered for a milestone.
+-->
+
+[kubernetes.io]: https://kubernetes.io/
+[kubernetes/enhancements]: https://git.k8s.io/enhancements
+[kubernetes/kubernetes]: https://git.k8s.io/kubernetes
+[kubernetes/website]: https://git.k8s.io/website
 
 ## Summary
 
@@ -125,9 +138,7 @@ reduce the risk of that happening.
 
 ### Goals
 
-* Define an API for exposing information about storage that is
-  flexible enough for a variety of use cases and that can be extended
-  later on.
+* Define an API for exposing storage capacity information.
 
 * Expose capacity information at the semantic
   level that Kubernetes currently understands, i.e. in a way that
@@ -149,9 +160,9 @@ reduce the risk of that happening.
   pending volume operations. This would depend on internal driver
   details that Kubernetes doesn’t have.
 
-* Nodes are not prioritized based on how much storage they have available.
+* Nodes are not yet prioritized based on how much storage they have available.
   This and a way to specify the policy for the prioritization might be
-  added later on in a separate KEP.
+  added later on.
 
 * Because of that and also for other reasons (capacity changed via
   operations outside of Kubernetes, like creating or deleting volumes,
@@ -170,10 +181,10 @@ reduce the risk of that happening.
   However, a CSI driver may use the capacity information exposed
   through the proposed API to make its choice.
 
-* Inline volumes could be extended to reference a storage class, which
-  then could be used to handle more complex situations (like the LVM
-  mirror vs. striped case) also for inline volumes. But this is outside
-  the scope of this KEP.
+* Nothing changes for the current CSI ephemeral inline volumes. A [new
+  approach for ephemeral inline
+  volumes](https://github.com/kubernetes/enhancements/issues/1698)
+  will support capacity tracking, based on this proposal here.
 
 ### User Stories
 
@@ -225,20 +236,6 @@ framework](https://kubernetes.io/docs/concepts/configuration/scheduling-framewor
 can be used to build and run a custom scheduler where the desired
 policy is compiled into the scheduler binary.
 
-#### Operators for applications
-
-Application operators for modern scale out storage services
-(e.g. MongoDB, ElasticSearch, Kafka, MySQL, PostgreSQL, Minio, etc.)
-may want to control creation of volumes carefully in order to optimize
-availability, durability, performance and cost. For more information
-about this, see the [StoragePool API for Advanced Storage Placement
-KEP](https://github.com/kubernetes/enhancements/pull/1347).
-
-The storage pool API as introduced in this KEP enables the creation of such
-operators. When combined with a CSI extension that allows a sidecar to
-list and query storage pools, even more information might become
-available, like health of a storage pool.
-
 ## Proposal
 
 ### Caching remaining capacity via the API server
@@ -274,55 +271,28 @@ call](#with-central-controller-generic-solution).
 
 ### Pod scheduling
 
-The Kubernetes scheduler watches the capacity information and
-excludes nodes with insufficient remaining capacity when it comes to
-making scheduling decisions for a pod which uses ephemeral inline
-volumes or persistent volumes with delayed binding. If the driver does
-not indicate that it supports capacity reporting, then the scheduler
-proceeds just as it does now, so nothing changes for existing CSI
-driver deployments.
-
-### Size of ephemeral inline volumes
-
-Storage that CSI drivers allocate from kubelet's root directory is not
-tracked at the moment and assumed to be so small that it doesn't need
-to be accounted for.
-
-For CSI drivers that allocate volumes of a certain size from somewhere
-else, one possibility would be to define `CSIVolumeSource.fsSize` as a
-new field that exposes the size in a vendor-agnostic way. This field
-then can be used to make scheduling decisions. Details for that are in
-https://github.com/kubernetes/enhancements/pull/1409.
-
-Another possibility is to add the ability to define a full persistent
-volume inside the pod spec and then provision it like normal
-persistent volumes, with size and storage class support, as defined in
-https://github.com/kubernetes/enhancements/pull/1701.
-
-This needs to be sorted out before this feature can move from alpha to
-beta.
+The Kubernetes scheduler watches the capacity information and excludes
+nodes with insufficient remaining capacity when it comes to making
+scheduling decisions for a pod which uses persistent volumes with
+delayed binding. If the driver does not indicate that it supports
+capacity reporting, then the scheduler proceeds just as it does now,
+so nothing changes for existing CSI driver deployments.
 
 ## Design Details
 
 ### API
 
-All Kubernetes API changes are under the `CSIStorageCapacity` feature
-gate.
-
-#### CSIStoragePool
-
-The prefix “CSI” is used to avoid confusion with other types that have
-a similar name and because some aspects are specific to CSI.
+#### CSIStorageCapacity
 
 ```
-// CSIStoragePool identifies one particular storage pool and
-// stores the corresponding attributes. The spec is read-only.
-type CSIStoragePool struct {
+// CSIStorageCapacity stores the result of one CSI GetCapacity call for one
+// driver, one topology segment, and the parameters of one storage class.
+type CSIStorageCapacity struct {
 	metav1.TypeMeta
 	// Standard object's metadata. The name has no particular meaning and just has to
 	// meet the usual requirements (length, characters, unique). To ensure that
 	// there are no conflicts with other CSI drivers on the cluster, the recommendation
-	// is to use sp-<uuid>.
+	// is to use csisc-<uuid>.
 	//
 	// Objects are not namespaced.
 	//
@@ -330,98 +300,66 @@ type CSIStoragePool struct {
 	// +optional
 	metav1.ObjectMeta
 
-	Spec   CSIStoragePoolSpec
-	Status CSIStoragePoolStatus
+    // Spec contains the properties that describe one capacity value.
+    Spec CSIStorageCapacitySpec
 }
 
-// CSIStoragePoolSpec contains the constant attributes of a CSIStoragePool.
-type CSIStoragePoolSpec struct {
-	// The CSI driver that provides access to the storage pool.
+// CSIStorageCapacitySpec contains the properties that describe one capacity value.
+type CSIStorageCapacitySpec struct {
+	// The CSI driver that provides the storage.
 	// This must be the string returned by the CSI GetPluginName() call.
 	DriverName string
-}
 
-// CSIStoragePoolStatus contains runtime information about a CSIStoragePool.
-//
-// A pool might only be accessible from a subset of the nodes in the
-// cluster as identified by NodeTopology. If not set, the pool is assumed
-// to be available in the entire cluster.
-//
-// It is expected to be extended with other
-// attributes which do not depend on the storage class, like health of
-// the pool. Therefore it has the list of
-// `CSIStorageByClass` instances instead of just the capacity
-// and the storage class being in the spec.
-type CSIStoragePoolStatus struct {
-	// NodeTopology can be used to describe a storage pool that is available
-	// only for nodes matching certain criteria.
+    // NodeTopology defines which nodes have access to the storage for which
+    // capacity was reported. If not set, the storage is accessible from all
+    // nodes in the cluster.
 	// +optional
 	NodeTopology *v1.NodeSelector
 
-	// Some information, like the actual usable capacity, may
-	// depend on the storage class used for volumes.
-	//
-	// +patchMergeKey=storageClassName
-	// +patchStrategy=merge
-	// +listType=map
-	// +listMapKey=storageClassName
-	// +optional
-	Classes []CSIStorageByClass `patchStrategy:"merge" patchMergeKey:"storageClassName" json:"classes,omitempty" protobuf:"bytes,4,opt,name=classes"`
-}
-
-// CSIStorageByClass contains information that applies to one storage
-// pool of a CSI driver when using a certain storage class.
-type CSIStorageByClass struct {
-	// The storage class name matches the name of some actual
-	// `StorageClass`, in which case the information applies when
-	// using that storage class for a volume. There is also one
-	// special name:
-	// - <ephemeral> for storage used by ephemeral inline volumes (which
-	//   don't use a storage class)
-	StorageClassName string `json:"storageClassName" protobuf:"bytes,1,name=storageClassName"`
+	// The storage class name of the StorageClass which provided the
+    // additional parameters for the GetCapacity call.
+	StorageClassName string
 
 	// Capacity is the value reported by the CSI driver in its GetCapacityResponse.
     // Depending on how the driver is implemented, this might be the total
     // size of the available storage which is only available when allocating
     // multiple smaller volumes ("total available capacity") or the
     // actual size that a volume may have ("maximum volume size").
+    //
+    // It is optional because in the future, other ways of describing capacity
+    // might get added. If not set, the scheduler will simply ignore the
+    // CSIStorageCapacity object.
+    //
 	// +optional
-	Capacity *resource.Quantity `json:"capacity,omitempty" protobuf:"bytes,2,opt,name=capacity"`
+	Capacity *resource.Quantity
 }
-
-const (
-	// EphemeralStorageClassName is used for storage from which
-	// ephemeral volumes are allocated.
-	EphemeralStorageClassName = "<ephemeral>"
-)
 ```
 
-Compared to the alternative with a single object per driver (see
-[`CSIDriver.Status`](#csidriverstatus) below), this approach has
-the advantage that the size of the `CSIStoragePool`
-objects do not depend on the number of nodes in the cluster for local
-storage.
+Compared to the alternatives with a single object per driver (see
+[`CSIDriver.Status`](#csidriverstatus) below) and one object per
+topology (see [`CSIStoragePool`](#csistoragepool)), this approach has
+the advantage that the size of the `CSIStorageCapacity` objects does
+not increase with the potentially unbounded number of some other
+objects (like storage classes).
 
 The downsides are:
 - Some attributes (driver name, topology) must be stored multiple times
-  compared to a single, more complex object that contains all information
-  for one CSI driver, so overall size in etcd is higher.
+  compared to a more complex object, so overall data size in etcd is higher.
 - Higher number of objects which all need to be retrieved by a client
-  which does not already know which `CSIStoragePool` is is interested in.
+  which does not already know which `CSIStorageCapacity` object it is
+  interested in.
 
 ##### Example: local storage
 
 ```
 apiVersion: storage.k8s.io/v1alpha1
-kind: CSIStoragePool
+kind: CSIStorageCapacity
 metadata:
   name: sp-ab96d356-0d31-11ea-ade1-8b7e883d1af1
 spec:
   driverName: hostpath.csi.k8s.io
-status:
-  classes:
-  - capacity: 256G
-    storageClassName: some-storage-class
+  storageClassName: some-storage-class
+  capacity: 256G
   nodeTopology:
     nodeSelectorTerms:
     - matchExpressions:
@@ -431,15 +369,13 @@ status:
         - node-1
 
 apiVersion: storage.k8s.io/v1alpha1
-kind: CSIStoragePool
+kind: CSIStorageCapacity
 metadata:
   name: sp-c3723f32-0d32-11ea-a14f-fbaf155dff50
 spec:
   driverName: hostpath.csi.k8s.io
-status:
-  classes:
-  - capacity: 512G
-    storageClassName: some-storage-class
+  storageClassName: some-storage-class
+  capacity: 512G
   nodeTopology:
     nodeSelectorTerms:
     - matchExpressions:
@@ -453,17 +389,29 @@ status:
 
 ```
 apiVersion: storage.k8s.io/v1alpha1
-kind: CSIStoragePool
+kind: CSIStorageCapacity
 metadata:
   name: sp-9c17f6fc-6ada-488f-9d44-c5d63ecdf7a9
 spec:
   driverName: lvm
-status:
-  classes:
-  - capacity: 256G
-    storageClassName: striped
-  - capacity: 128G
-    storageClassName: mirrored
+  storageClassName: striped
+  capacity: 256G
+  nodeTopology:
+    nodeSelectorTerms:
+    - matchExpressions:
+      - key: kubernetes.io/hostname
+        operator: In
+        values:
+        - node-1
+
+apiVersion: storage.k8s.io/v1alpha1
+kind: CSIStorageCapacity
+metadata:
+  name: sp-f0e03868-954d-11ea-9d78-9f197c0aea6f
+spec:
+  driverName: lvm
+  storageClassName: mirrored
+  capacity: 128G
   nodeTopology:
     nodeSelectorTerms:
     - matchExpressions:
@@ -477,15 +425,13 @@ status:
 
 ```
 apiVersion: storage.k8s.io/v1alpha1
-kind: CSIStoragePool
+kind: CSIStorageCapacity
 metadata:
   name: sp-b0963bb5-37cf-415d-9fb1-667499172320
 spec:
   driverName: pd.csi.storage.gke.io
-status:
-  classes:
-  - capacity: 128G
-    storageClassName: some-storage-class
+  storageClassName: some-storage-class
+  capacity: 128G
   nodeTopology:
     nodeSelectorTerms:
     - matchExpressions:
@@ -495,15 +441,13 @@ status:
         - us-east-1
 
 apiVersion: storage.k8s.io/v1alpha1
-kind: CSIStoragePool
+kind: CSIStorageCapacity
 metadata:
   name: sp-64103396-0d32-11ea-945c-e3ede5f0f3ae
 spec:
   driverName: pd.csi.storage.gke.io
-status:
-  classes:
-  - capacity: 256G
-    storageClassName: some-storage-class
+  storageClassName: some-storage-class
+  capacity: 256G
   nodeTopology:
     nodeSelectorTerms:
     - matchExpressions:
@@ -518,7 +462,7 @@ status:
 A new field `storageCapacity` of type `boolean` with default `false`
 in
 [CSIDriver.spec](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.16/#csidriverspec-v1beta1-storage-k8s-io)
-indicates whether a driver deployment will create `CSIStoragePool`
+indicates whether a driver deployment will create `CSIStorageCapacity`
 objects with capacity information and wants the Kubernetes scheduler
 to rely on that information when making scheduling decisions that
 involve volumes that need to be created by the driver.
@@ -526,20 +470,11 @@ involve volumes that need to be created by the driver.
 If not set, the scheduler makes such decisions without considering
 whether the driver really can create the volumes (the current situation).
 
-
 ### Updating capacity information with external-provisioner
 
 Most (if not all) CSI drivers already get deployed on Kubernetes
 together with the external-provisioner which then handles volume
-provisioning via PVC. However, drivers which only handle inline
-ephemeral volumes currently don’t need that and thus get deployed
-without it.
-
-For the sake of avoiding yet another sidecar, the proposal is to
-extend the external-provisioner such that it can also be deployed
-alongside a CSI driver on each node and then just handles
-`CSIStoragePool` creation and updating. This leads to different modes
-of operations.
+provisioning via PVC.
 
 Because the external-provisioner is part of the deployment of the CSI
 driver, that deployment can configure the behavior of the
@@ -563,11 +498,10 @@ size that the largest volume can have at the moment.
 #### Without central controller
 
 This mode of operation is expected to be used by CSI drivers that need
-to track capacity per node and only support ephemeral inline volumes
-and/or persistent volumes with delayed binding that get provisioned
-by an external-provisioner instance that runs on the node where
-the volume gets provisioned (see the proposal for
-csi-driver-host-path in
+to track capacity per node and only support persistent volumes with
+delayed binding that get provisioned by an external-provisioner
+instance that runs on the node where the volume gets provisioned (see
+the proposal for csi-driver-host-path in
 https://github.com/kubernetes-csi/external-provisioner/pull/367).
 
 The CSI driver has to implement the CSI controller service and its
@@ -575,7 +509,7 @@ The CSI driver has to implement the CSI controller service and its
 to the daemon set and enable the per-node capacity tracking with
 `--enable-capacity=local`.
 
-The resulting `CSIStoragePool` objects then use a node selector for
+The resulting `CSIStorageCapacity` objects then use a node selector for
 one node.
 
 #### With central controller
@@ -604,58 +538,44 @@ this mode, external-provisioner then can identify pools as follows:
 - compute the union of the topology segments from these
   `CSINodeDriver` entries.
 
-For each entry in that union, potentially one `CSIStoragePool` is
-created with a node selector that uses the topology key/value pairs as
-node labels. That works because kubelet automatically labels nodes
-based on the CSI drivers that run on that node.
+For each entry in that union, one `CSIStorageCapacity` object is
+created for each storage class where the driver reports a non-zero
+capacity. The node selector uses the topology key/value pairs as node
+labels. That works because kubelet automatically labels nodes based on
+the CSI drivers that run on that node.
 
 #### With central controller, generic solution
 
-For all other cases, a new CSI call to enumerate storage pools will be
-needed. At a minimum, that call must return a list of entries where
-each entry has the topology segments for the corresponding pool.
+For all other cases, a new CSI call to enumerate storage topology
+segments will be needed. That call then might also include other
+information for each segment.
 
 #### Determining parameters
 
-After determining the topology as described above, external-provisioner
-needs to figure out with which volume parameters it needs to call `GetCapacity`.
+After determining the topology as described above,
+external-provisioner needs to figure out with which volume parameters
+it needs to call `GetCapacity`. It does that by iterating over all
+storage classes that reference the driver.
 
-When `--enable-capacity=storageclasses` is used, it will iterate over
-all storage classes defined for the driver and call `GetCapacity` once
-per class with the parameters defined in the class. The result will be
-stored in one `CSIStoragePoolByClass` per storage class.
-
-If the current combination of topology segment for a pool and storage
-class parameters do not make sense, then a driver must return "zero
+If the current combination of topology segment and storage class
+parameters do not make sense, then a driver must return "zero
 capacity" or an error, in which case external-provisioner will skip
 this combination. This covers the case where some storage class
-parameter selects a certain storage pool, because information will
-then only be recorded for that pool.
+parameter limits the topology segment of volumes using that class,
+because information will then only be recorded for the segments that
+are supported by the class.
 
-When `--enable-capacity=ephemeral` is used, it will call `GetCapacity`
-without parameters and create the special `<ephemeral>`
-`CSIStoragePoolByClass` entry.
-
-While technically these options are orthogonal, not all combinations
-make sense. The expected usage is:
-* A driver that only supports ephemeral volumes should use only
-  `--enable-capacity=ephemeral`. Storage classes that might
-  (accidentally?) be created for the driver will be ignored.
-* A driver where parameters have an effect should use `--enable-capacity=storageclasses`,
-  combined with `--enable-capacity=ephemeral` if ephemeral volumes
-  are supported.
-
-#### CSIStoragePool lifecycle
+#### CSIStorageCapacity lifecycle
 
 external-provisioner needs permission to create, update and delete
-`CSIStoragePool` objects. Before creating a new object, it must check
-whether one already exists with the relevant attributes (driver name +
-nodes) and then update that one instead. Obsolete objects needs to be
-removed.
+`CSIStorageCapacity` objects. Before creating a new object, it must
+check whether one already exists with the relevant attributes (driver
+name + nodes + storage class) and then update that one
+instead. Obsolete objects need to be removed.
 
-To ensure that `CSIStoragePool` objects get removed when the driver
+To ensure that `CSIStorageCapacity` objects get removed when the driver
 deployment gets removed before it has a chance to clean up, each
-`CSIStoragePool` object needs an [owner
+`CSIStorageCapacity` object needs an [owner
 reference](https://godoc.org/k8s.io/apimachinery/pkg/apis/meta/v1#OwnerReference).
 
 For central provisioning, that has to be the deployment or stateful
@@ -665,13 +585,14 @@ election.
 
 For deployment with a daemon set, making the individual pod the owner
 is better than the daemon set as owner because then other instances do
-not need to figure out when to remove `CSIStoragePool` objects created
-on another node. It is also better than the node as owner because a
-driver might no longer be needed on a node although the node continues
-to exist (for example, via labels).
+not need to figure out when to remove `CSIStorageCapacity` objects
+created on another node. It is also better than the node as owner
+because a driver might no longer be needed on a node although the node
+continues to exist (for example, when deploying a driver to nodes is
+controlled via node labels).
 
 While external-provisioner runs, it needs to update and potentially
-delete `CSIStoragePool` objects:
+delete `CSIStorageCapacity` objects:
 - when nodes change (for central provisioning)
 - when storage classes change (for persistent volumes)
 - when volumes were created or deleted (for central provisioning)
@@ -679,8 +600,7 @@ delete `CSIStoragePool` objects:
 - periodically, to detect changes in the underlying backing store (all cases)
 
 Because sidecars are currently separated, external-provisioner is
-unaware of resizing and snapshotting. It also not involved with
-ephemeral inline volumes. The periodic polling will catch up
+unaware of resizing and snapshotting. The periodic polling will catch up
 with changes caused by those operations.
 
 ### Using capacity information
@@ -696,19 +616,18 @@ The
 function gets extended to not only check for a compatible topology of
 a node (as it does now), but also to verify whether the node falls
 into a topology segment that has enough capacity left. This check is
-only necessary for PVCs that have not been bound yet and for inline
-volumes.
+only necessary for PVCs that have not been bound yet.
 
 The lookup sequence will be:
 - find the `CSIDriver` object for the driver
 - check whether it has `CSIDriver.spec.storageCapacity` enabled
-- find all `CSIStoragePool` objects that have the right spec
-  (driver, accessible by node) and sufficient capacity for the
-  volume attributes (storage class vs. ephemeral)
+- find all `CSIStorageCapacity` objects that have the right spec
+  (driver, accessible by node, storage class) and sufficient capacity.
 
 The specified volume size is compared against `Capacity` if
-available. A pool which has no reported capacity or a capacity that is
-too small is considered unusable at the moment and ignored.
+available. A topology segment which has no reported capacity or a
+capacity that is too small is considered unusable at the moment and
+ignored.
 
 Each volume gets checked separately, independently of other volumes
 that are needed by the current pod or by volumes that are about to be
@@ -724,9 +643,10 @@ positive.
 
 More promising might be to add prioritization of nodes based on how
 much capacity they have left, thus spreading out storage usage evenly.
+This is a likely future extension of this KEP.
 
 Either way, the problem of recovering more gracefully from running out
-of storage after scheduling onto a node will have to be addressed
+of storage after a bad scheduling decision will have to be addressed
 eventually. Details for that are in https://github.com/kubernetes/enhancements/pull/1703.
 
 ### Test Plan
@@ -760,7 +680,7 @@ Full end-to-end testing is needed to ensure that new RBAC rules are
 identified and documented properly. For this, a new alpha deployment
 in csi-driver-host-path is needed because we have to make changes to
 the deployment like setting `CSIDriver.spec.storageCapacity` which
-will only be valid when tested with Kubernetes 1.18 cluster where
+will only be valid when tested with Kubernetes clusters where
 alpha features are enabled.
 
 The CSI hostpath driver needs to be changed such that it reports the
@@ -770,7 +690,7 @@ scheduling works:
 - Those volumes have a size set.
 - Late binding is enabled for the CSI hostpath driver.
 
-A new test can be written which checks for `CSIStoragePool` objects,
+A new test can be written which checks for `CSIStorageCapacity` objects,
 asks for pod scheduling with a volume that is too large, and then
 checks for events that describe the problem.
 
@@ -790,10 +710,231 @@ checks for events that describe the problem.
 
 #### Beta -> GA Graduation
 
-- 5 CSI drivers enabling the creation of `CSIStoragePool` data
+- 5 CSI drivers enabling the creation of `CSIStorageCapacity` data
 - 5 installs
 - More rigorous forms of testing e.g., downgrade tests and scalability tests
 - Allowing time for feedback
+
+### Upgrade / Downgrade Strategy
+
+<!--
+If applicable, how will the component be upgraded and downgraded? Make sure
+this is in the test plan.
+
+Consider the following in developing an upgrade/downgrade strategy for this
+enhancement:
+- What changes (in invocations, configurations, API use, etc.) is an existing
+  cluster required to make on upgrade in order to keep previous behavior?
+- What changes (in invocations, configurations, API use, etc.) is an existing
+  cluster required to make on upgrade in order to make use of the enhancement?
+-->
+
+### Version Skew Strategy
+
+<!--
+If applicable, how will the component handle version skew with other
+components? What are the guarantees? Make sure this is in the test plan.
+
+Consider the following in developing a version skew strategy for this
+enhancement:
+- Does this enhancement involve coordinating behavior in the control plane and
+  in the kubelet? How does an n-2 kubelet without this feature available behave
+  when this feature is used?
+- Will any other components on the node change? For example, changes to CSI,
+  CRI or CNI may require updating that component before the kubelet.
+-->
+
+## Production Readiness Review Questionnaire
+
+### Feature enablement and rollback
+
+* **How can this feature be enabled / disabled in a live cluster?**
+  - [X] Feature gate
+    - Feature gate name: CSIStorageCapacity
+    - Components depending on the feature gate:
+      - apiserver
+      - kube-scheduler
+
+* **Does enabling the feature change any default behavior?**
+  No changes for existing storage driver deployments.
+
+* **Can the feature be disabled once it has been enabled (i.e. can we rollback
+  the enablement)?**
+  Yes.
+
+  When disabling support in the API server, the new object type and
+  thus all objects will disappear together with the new flag in
+  `CSIDriver`, which will then cause kube-scheduler to revert to
+  provisioning without capacity information. However, the new objects
+  will still remain in the etcd database.
+
+  When disabling it in the scheduler, provisioning directly reverts
+  to the previous behavior.
+
+  External-provisioner will be unable to update objects: this needs to
+  be treated with exponential backoff just like other communication
+  issues with the API server.
+
+* **What happens if we reenable the feature if it was previously rolled back?**
+
+  Stale objects will either get garbage collected via their ownership relationship
+  or get updated by external-provisioner. Scheduling with capacity information
+  resumes.
+
+* **Are there any tests for feature enablement/disablement?**
+  The e2e framework does not currently support enabling and disabling feature
+  gates. However, unit tests in each component dealing with managing data created
+  with and without the feature are necessary. At the very least, think about
+  conversion tests if API types are being modified.
+
+### Rollout, Upgrade and Rollback Planning
+
+_This section must be completed when targeting beta graduation to a release._
+
+* **How can a rollout fail? Can it impact already running workloads?**
+  Try to be as paranoid as possible - e.g. what if some components will restart
+  in the middle of rollout?
+
+* **What specific metrics should inform a rollback?**
+
+* **Were upgrade and rollback tested? Was upgrade->downgrade->upgrade path tested?**
+  Describe manual testing that was done and the outcomes.
+  Longer term, we may want to require automated upgrade/rollback tests, but we
+  are missing a bunch of machinery and tooling and do that now.
+
+* **Is the rollout accompanied by any deprecations and/or removals of features,
+  APIs, fields of API types, flags, etc.?**
+  Even if applying deprecation policies, they may still surprise some users.
+
+### Monitoring requirements
+
+_This section must be completed when targeting beta graduation to a release._
+
+* **How can an operator determine if the feature is in use by workloads?**
+  Ideally, this should be a metrics. Operations against Kubernetes API (e.g.
+  checking if there are objects with field X set) may be last resort. Avoid
+  logs or events for this purpose.
+
+* **What are the SLIs (Service Level Indicators) an operator can use to
+  determine the health of the service?**
+  - [ ] Metrics
+    - Metric name:
+    - [Optional] Aggregation method:
+    - Components exposing the metric:
+  - [ ] Other (treat as last resort)
+    - Details:
+
+* **What are the reasonable SLOs (Service Level Objectives) for the above SLIs?**
+  At the high-level this usually will be in the form of "high percentile of SLI
+  per day <= X". It's impossible to provide a comprehensive guidance, but at the very
+  high level (they needs more precise definitions) those may be things like:
+  - per-day percentage of API calls finishing with 5XX errors <= 1%
+  - 99% percentile over day of absolute value from (job creation time minus expected
+    job creation time) for cron job <= 10%
+  - 99,9% of /health requests per day finish with 200 code
+
+* **Are there any missing metrics that would be useful to have to improve
+  observability if this feature?**
+  Describe the metrics themselves and the reason they weren't added (e.g. cost,
+  implementation difficulties, etc.).
+
+### Dependencies
+
+_This section must be completed when targeting beta graduation to a release._
+
+* **Does this feature depend on any specific services running in the cluster?**
+  Think about both cluster-level services (e.g. metrics-server) as well
+  as node-level agents (e.g. specific version of CRI). Focus on external or
+  optional services that are needed. For example, if this feature depends on
+  a cloud provider API, or upon an external software-defined storage or network
+  control plane.
+
+  For each of the fill in the following, thinking both about running user workloads
+  and creating new ones, as well as about cluster-level services (e.g. DNS):
+  - [Dependency name]
+    - Usage description:
+      - Impact of its outage on the feature:
+      - Impact of its degraded performance or high error rates on the feature:
+
+
+### Scalability
+
+_For alpha, this section is encouraged: reviewers should consider these questions
+and attempt to answer them._
+
+_For beta, this section is required: reviewers must answer these questions._
+
+_For GA, this section is required: approvers should be able to confirms the
+previous answers based on experience in the field._
+
+* **Will enabling / using this feature result in any new API calls?**
+  Describe them, providing:
+  - API call type (e.g. PATCH pods)
+  - estimated throughput
+  - originating component(s) (e.g. Kubelet, Feature-X-controller)
+  focusing mostly on:
+  - components listing and/or watching resources they didn't before
+  - API calls that may be triggered by changes of some Kubernetes resources
+    (e.g. update of object X triggers new updates of object Y)
+  - periodic API calls to reconcile state (e.g. periodic fetching state,
+    heartbeats, leader election, etc.)
+
+* **Will enabling / using this feature result in introducing new API types?**
+  Describe them providing:
+  - API type
+  - Supported number of objects per cluster
+  - Supported number of objects per namespace (for namespace-scoped objects)
+
+* **Will enabling / using this feature result in any new calls to cloud
+  provider?**
+
+* **Will enabling / using this feature result in increasing size or count
+  of the existing API objects?**
+  Describe them providing:
+  - API type(s):
+  - Estimated increase in size: (e.g. new annotation of size 32B)
+  - Estimated amount of new objects: (e.g. new Object X for every existing Pod)
+
+* **Will enabling / using this feature result in increasing time taken by any
+  operations covered by [existing SLIs/SLOs][]?**
+  Think about adding additional work or introducing new steps in between
+  (e.g. need to do X to start a container), etc. Please describe the details.
+
+* **Will enabling / using this feature result in non-negligible increase of
+  resource usage (CPU, RAM, disk, IO, ...) in any components?**
+  Things to keep in mind include: additional in-memory state, additional
+  non-trivial computations, excessive access to disks (including increased log
+  volume), significant amount of data send and/or received over network, etc.
+  This through this both in small and large cases, again with respect to the
+  [supported limits][].
+
+### Troubleshooting
+
+Troubleshooting section serves the `Playbook` role as of now. We may consider
+splitting it into a dedicated `Playbook` document (potentially with some monitoring
+details). For now we leave it here though.
+
+_This section must be completed when targeting beta graduation to a release._
+
+* **How does this feature react if the API server and/or etcd is unavailable?**
+
+* **What are other known failure modes?**
+  For each of them fill in the following information by copying the below template:
+  - [Failure mode brief description]
+    - Detection: How can it be detected via metrics? Stated another way:
+      how can an operator troubleshoot without loogging into a master or worker node?
+    - Mitigations: What can be done to stop the bleeding, especially for already
+      running user workloads?
+    - Diagnostics: What are the useful log messages and their required logging
+      levels that could help debugging the issue?
+      Not required until feature graduated to Beta.
+    - Testing: Are there any tests for failure mode? If not describe why.
+
+* **What steps should be taken if SLOs are not being met to determine the problem?**
+
+[supported limits]: https://git.k8s.io/community//sig-scalability/configs-and-limits/thresholds.md
+[existing SLIs/SLOs]: https://git.k8s.io/community/sig-scalability/slos/slos.md#kubernetes-slisslos
+
 
 ## Implementation History
 
@@ -829,7 +970,7 @@ topology support can add it simply by always returning the same static
 
 In the current proposal, `GetCapacity` will be called for every every
 storage class. This is extra work and will lead to redundant
-`CSIStoragePoolByClass` entries for CSI drivers where the storage
+`CSIStorageCapacity` entries for CSI drivers where the storage
 class parameters have no effect.
 
 To handles this special case, a special `<fallback>` storage class
@@ -856,7 +997,6 @@ from the KEP because a node selector can be used instead and therefore
 the node list was considered redundant and unnecessary. The examples
 in the next section use `nodes` in some cases to demonstrate the
 difference.
-
 
 ### CSIDriver.Status
 
@@ -1079,6 +1219,193 @@ status:
           operator: In
           values:
           - us-west-1
+```
+
+### CSIStoragePool
+
+Instead of one `CSIStorageCapacity` object per `GetCapacity` call, in
+this alternative API the result of multiple calls would be combined in
+one object. This is potentially more efficient (less objects, less
+redundant data) while still fitting the producer/consumer model in
+this proposal. It also might be better aligned with other, future
+enhancements.
+
+It was rejected during review because the API is more complex.
+
+```
+// CSIStoragePool identifies one particular storage pool and
+// stores its attributes. The spec is read-only.
+type CSIStoragePool struct {
+	metav1.TypeMeta
+	// Standard object's metadata. The name has no particular meaning and just has to
+	// meet the usual requirements (length, characters, unique). To ensure that
+	// there are no conflicts with other CSI drivers on the cluster, the recommendation
+	// is to use sp-<uuid>.
+	//
+	// Objects are not namespaced.
+	//
+	// More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata
+	// +optional
+	metav1.ObjectMeta
+
+	Spec   CSIStoragePoolSpec
+	Status CSIStoragePoolStatus
+}
+
+// CSIStoragePoolSpec contains the constant attributes of a CSIStoragePool.
+type CSIStoragePoolSpec struct {
+	// The CSI driver that provides access to the storage pool.
+	// This must be the string returned by the CSI GetPluginName() call.
+	DriverName string
+}
+
+// CSIStoragePoolStatus contains runtime information about a CSIStoragePool.
+//
+// A pool might only be accessible from a subset of the nodes in the
+// cluster as identified by NodeTopology. If not set, the pool is assumed
+// to be available in the entire cluster.
+//
+// It is expected to be extended with other
+// attributes which do not depend on the storage class, like health of
+// the pool. Capacity may depend on the parameters in the storage class and
+// therefore is stored in a list of `CSIStorageByClass` instances.
+type CSIStoragePoolStatus struct {
+	// NodeTopology can be used to describe a storage pool that is available
+	// only for nodes matching certain criteria.
+	// +optional
+	NodeTopology *v1.NodeSelector
+
+	// Some information, like the actual usable capacity, may
+	// depend on the storage class used for volumes.
+	//
+	// +patchMergeKey=storageClassName
+	// +patchStrategy=merge
+	// +listType=map
+	// +listMapKey=storageClassName
+	// +optional
+	Classes []CSIStorageByClass `patchStrategy:"merge" patchMergeKey:"storageClassName" json:"classes,omitempty" protobuf:"bytes,4,opt,name=classes"`
+}
+
+// CSIStorageByClass contains information that applies to one storage
+// pool of a CSI driver when using a certain storage class.
+type CSIStorageByClass struct {
+	// The storage class name matches the name of some actual
+	// `StorageClass`, in which case the information applies when
+	// using that storage class for a volume.
+	StorageClassName string `json:"storageClassName" protobuf:"bytes,1,name=storageClassName"`
+
+	// Capacity is the value reported by the CSI driver in its GetCapacityResponse.
+    // Depending on how the driver is implemented, this might be the total
+    // size of the available storage which is only available when allocating
+    // multiple smaller volumes ("total available capacity") or the
+    // actual size that a volume may have ("maximum volume size").
+	// +optional
+	Capacity *resource.Quantity `json:"capacity,omitempty" protobuf:"bytes,2,opt,name=capacity"`
+}
+```
+
+##### Example: local storage
+
+```
+apiVersion: storage.k8s.io/v1alpha1
+kind: CSIStoragePool
+metadata:
+  name: sp-ab96d356-0d31-11ea-ade1-8b7e883d1af1
+spec:
+  driverName: hostpath.csi.k8s.io
+status:
+  classes:
+  - capacity: 256G
+    storageClassName: some-storage-class
+  nodeTopology:
+    nodeSelectorTerms:
+    - matchExpressions:
+      - key: kubernetes.io/hostname
+        operator: In
+        values:
+        - node-1
+
+apiVersion: storage.k8s.io/v1alpha1
+kind: CSIStoragePool
+metadata:
+  name: sp-c3723f32-0d32-11ea-a14f-fbaf155dff50
+spec:
+  driverName: hostpath.csi.k8s.io
+status:
+  classes:
+  - capacity: 512G
+    storageClassName: some-storage-class
+  nodeTopology:
+    nodeSelectorTerms:
+    - matchExpressions:
+      - key: kubernetes.io/hostname
+        operator: In
+        values:
+        - node-2
+```
+
+##### Example: affect of storage classes
+
+```
+apiVersion: storage.k8s.io/v1alpha1
+kind: CSIStoragePool
+metadata:
+  name: sp-9c17f6fc-6ada-488f-9d44-c5d63ecdf7a9
+spec:
+  driverName: lvm
+status:
+  classes:
+  - capacity: 256G
+    storageClassName: striped
+  - capacity: 128G
+    storageClassName: mirrored
+  nodeTopology:
+    nodeSelectorTerms:
+    - matchExpressions:
+      - key: kubernetes.io/hostname
+        operator: In
+        values:
+        - node-1
+```
+
+##### Example: network attached storage
+
+```
+apiVersion: storage.k8s.io/v1alpha1
+kind: CSIStoragePool
+metadata:
+  name: sp-b0963bb5-37cf-415d-9fb1-667499172320
+spec:
+  driverName: pd.csi.storage.gke.io
+status:
+  classes:
+  - capacity: 128G
+    storageClassName: some-storage-class
+  nodeTopology:
+    nodeSelectorTerms:
+    - matchExpressions:
+      - key: topology.kubernetes.io/region
+        operator: In
+        values:
+        - us-east-1
+
+apiVersion: storage.k8s.io/v1alpha1
+kind: CSIStoragePool
+metadata:
+  name: sp-64103396-0d32-11ea-945c-e3ede5f0f3ae
+spec:
+  driverName: pd.csi.storage.gke.io
+status:
+  classes:
+  - capacity: 256G
+    storageClassName: some-storage-class
+  nodeTopology:
+    nodeSelectorTerms:
+    - matchExpressions:
+      - key: topology.kubernetes.io/region
+        operator: In
+        values:
+        - us-west-1
 ```
 
 ### Prior work
