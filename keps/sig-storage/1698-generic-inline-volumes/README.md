@@ -187,7 +187,7 @@ by a more traditional storage system because:
 A new volume source will be introduced:
 
 ```
-typedef InlineVolumeSource struct {
+type InlineVolumeSource struct {
     VolumeClaimTemplate PersistentVolumeClaim
     ReadOnly            bool
 }
@@ -233,6 +233,16 @@ not met by the normal Kubernetes `EmptyDir` volumes. For example,
 [TopoLVM](https://github.com/cybozu-go/topolvm) was written for that
 purpose.
 
+#### Read-only access to volumes with data
+
+Provisioning a volume might result in a non-empty volume:
+- [restore a snapshot](https://kubernetes.io/docs/concepts/storage/persistent-volumes/#volume-snapshot-and-restore-volume-from-snapshot-support)
+- [cloning a volume](https://kubernetes.io/docs/concepts/storage/volume-pvc-datasource)
+- [generic data populators](https://github.com/kubernetes/enhancements/blob/master/keps/sig-storage/20200120-generic-data-populators.md)
+
+For those, it might make sense to mount the volume read-only inside
+the pod to prevent accidental modification of the data.
+
 ### Risks and Mitigations
 
 Enabling this feature allows users to create PVCs indirectly if they can
@@ -241,8 +251,15 @@ directly. Cluster administrators must be made aware of this. If this
 does not fit their security model, they can disable the feature
 through the feature gate that will be added for the feature.
 
-Alternatively, a label on a namespace could be used to disable the
-feature just for that namespace.
+In addition, with a new
+[`FSType`](https://github.com/kubernetes/kubernetes/blob/1fb0dd4ec5134014e466509163152112626d52c3/pkg/apis/policy/types.go#L278-L309)
+it will be possible to limit the usage of this volume source via the
+[PodSecurityPolicy
+(PSP)](https://kubernetes.io/docs/concepts/policy/pod-security-policy/#volumes-and-file-systems).
+
+The normal namespace quota for PVCs in a namespace still applies, so
+even if users are allowed to use this new mechanism, they cannot use
+it to circumvent other policies.
 
 ## Design Details
 
@@ -268,16 +285,20 @@ owned by the pod before using it. Otherwise they must ignored it. This
 ensures that a volume is not used accidentally for a pod in case of a
 name conflict.
 
-To surface such a name conflict to the user, the controller can also
-check for PVCs that aren't owned by the pod in its reconciliation loop
-and emit a pod event that describes the problem.
+### Pod events
+
+Errors that occur while creating the PVC will be reported as events
+for the pod and thus be visible to the user. This includes quota
+violations and name collisions.
 
 ### Feature gate
 
 The `GenericInlineVolumes` feature gate controls whether:
 - the new controller is active in the `kube-controller-manager`,
 - new pods can be created with a `InlineVolumeSource`,
-- kubelet and scheduler accept such volumes.
+- anything that specifically acts upon an `InlineVolumeSource` (scheduler,
+  kubelet, etc.) instead of merely copying it (statefulset controller)
+  accepts the new volume source.
 
 Existing pods with such a volumes will not be scheduled respectively
 started when the feature gate is off.
