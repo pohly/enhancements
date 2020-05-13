@@ -70,10 +70,13 @@ SIG Architecture for cross cutting KEPs).
   - [User Stories](#user-stories)
     - [Persistent Memory as DRAM replacement for memcached](#persistent-memory-as-dram-replacement-for-memcached)
     - [Local LVM storage as scratch space](#local-lvm-storage-as-scratch-space)
+    - [Read-only access to volumes with data](#read-only-access-to-volumes-with-data)
   - [Risks and Mitigations](#risks-and-mitigations)
+- [Example](#example)
 - [Design Details](#design-details)
   - [PVC meta data](#pvc-meta-data)
   - [Preventing accidental collision with existing PVCs](#preventing-accidental-collision-with-existing-pvcs)
+  - [Pod events](#pod-events)
   - [Feature gate](#feature-gate)
   - [Modifying volumes](#modifying-volumes)
   - [Late binding](#late-binding)
@@ -177,24 +180,45 @@ by a more traditional storage system because:
 
 ### Non-Goals
 
-- This will not replace CSI ephemeral inline volumes.
-- Inline volumes could also be kept alive after their pod terminates,
-  but that is only useful if some higher-level logic then takes care
-  of deletion. For now this is out of scope.
+- This will not replace CSI ephemeral inline volumes because the
+  goals for those (light-weight local volumes) are not a good fit
+  for the approach proposed here.
+- These inline volumes will always be ephemeral. If making them persistent
+  was allowed, some additional controller would be needed to manage them
+  after pod termination, in which case it will probably be simpler to
+  also create them separately.
 
 ## Proposal
 
 A new volume source will be introduced:
 
 ```
-type InlineVolumeSource struct {
-    VolumeClaimTemplate PersistentVolumeClaim
-    ReadOnly            bool
+type EphemeralVolumeSource struct {
+    // Required. Defined as a pointer because in the future there
+    // might be alternative ways to specify how the ephemeral
+    // volume gets provisioned.
+    VolumeClaimTemplate *PersistentVolumeClaim
+    ReadOnly             bool
 }
 ```
 
 This mimics a `PersistentVolumeClaimVolumeSource`, except that it
 contains a `PersistentVolumeClaim` instead of referencing one by name.
+A full `PersistentVolumeClaim` is used for consistency with the
+StatefulSet API.
+
+It gets embedded in the `VolumeSource` struct as another alternative:
+
+```
+type VolumeSource struct {
+   ...
+   CSI                   *CSIVolumeSource
+   PersistentVolumeClaim *PersistentVolumeClaimVolumeSource
+   ...
+   Ephemeral             *EphemeralVolumeSource
+   ...
+}
+```
 
 A new controller in `kube-controller-manager` is responsible for
 creating new PVCs for each such inline volume. It does that:
@@ -260,6 +284,55 @@ it will be possible to limit the usage of this volume source via the
 The normal namespace quota for PVCs in a namespace still applies, so
 even if users are allowed to use this new mechanism, they cannot use
 it to circumvent other policies.
+
+## Example
+
+Here is a full example for a higher-level object that uses ephemeral
+inline volumes:
+
+```
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: fluentd-elasticsearch
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      name: fluentd-elasticsearch
+  template:
+    metadata:
+      labels:
+        name: fluentd-elasticsearch
+    spec:
+      containers:
+      - name: fluentd-elasticsearch
+        image: quay.io/fluentd_elasticsearch/fluentd:v2.5.2
+        volumeMounts:
+        - name: varlog
+          mountPath: /var/log
+        - name: scratch
+          mountPath: /scratch
+      volumes:
+      - name: varlog
+        hostPath:
+          path: /var/log
+      - name: scratch
+        ephemeral:
+          metadata:
+            labels:
+              type: fluentd-elasticsearch-volume
+          spec:
+            accessModes: [ "ReadWriteOnce" ]
+            storageClassName: "scratch-storage-class"
+            resources:
+              requests:
+                storage: 1Gi
+```
+
+The DaemonSet controller will create pods with names like
+`fluentd-elasticsearch-b96sd` and the new controller will then add a
+PVC called `fluentd-elasticsearch-b96sd-scratch` for that pod.
 
 ## Design Details
 
@@ -339,7 +412,9 @@ automatically enable late binding for PVCs which are owned by a pod.
 #### Alpha -> Beta Graduation
 
 - Gather feedback from developers and surveys
-- Volume name collisions emitted as pod events
+- Errors emitted as pod events
+- Decide whether `CSIVolumeSource` (in beta at the moment) should be
+  merged with `EphemeralVolumeSource`
 - Tests are in Testgrid and linked in KEP
 
 #### Beta -> GA Graduation
