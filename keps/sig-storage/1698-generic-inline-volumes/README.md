@@ -115,11 +115,11 @@ checklist items _must_ be updated for the enhancement to be released.
 
 Items marked with (R) are required *prior to targeting to a milestone / release*.
 
-- [ ] (R) Enhancement issue in release milestone, which links to KEP dir in [kubernetes/enhancements] (not the initial KEP PR)
+- [X] (R) Enhancement issue in release milestone, which links to KEP dir in [kubernetes/enhancements] (not the initial KEP PR)
 - [ ] (R) KEP approvers have approved the KEP status as `implementable`
 - [ ] (R) Design details are appropriately documented
 - [ ] (R) Test plan is in place, giving consideration to SIG Architecture and SIG Testing input
-- [ ] (R) Graduation criteria is in place
+- [X] (R) Graduation criteria is in place
 - [ ] (R) Production readiness review completed
 - [ ] Production readiness review approved
 - [ ] "Implementation History" section is up-to-date for milestone
@@ -194,20 +194,30 @@ A new volume source will be introduced:
 
 ```
 type EphemeralVolumeSource struct {
-    // Required. Defined as a pointer because in the future there
-    // might be alternative ways to specify how the ephemeral
-    // volume gets provisioned.
+    // Will be created as a stand-alone PVC to provision the volume.
+    // Required, must not be nil.
     VolumeClaimTemplate *PersistentVolumeClaim
     ReadOnly             bool
 }
 ```
 
-This mimics a `PersistentVolumeClaimVolumeSource`, except that it
-contains a `PersistentVolumeClaim` instead of referencing one by name.
-A full `PersistentVolumeClaim` is used for consistency with the
-StatefulSet API.
+This mimics a
+[`PersistentVolumeClaimVolumeSource`](https://pkg.go.dev/k8s.io/api/core/v1?tab=doc#PersistentVolumeClaimVolumeSource),
+except that it contains a `PersistentVolumeClaim` instead of
+referencing one by name.  A full `PersistentVolumeClaim` is used for
+consistency with the StatefulSet API.
 
-It gets embedded in the `VolumeSource` struct as another alternative:
+`VolumeClaimTemplate` is defined as a pointer because in the future there
+might be alternative ways to specify how the ephemeral
+volume gets provisioned, in which case `nil` will become a valid value.
+
+It gets embedded in the existing [`VolumeSource`
+struct](https://pkg.go.dev/k8s.io/api/core/v1?tab=doc#VolumeSource)
+struct as another alternative to the other ways of providing the
+volume, like
+[`CSIVolumeSource`](https://pkg.go.dev/k8s.io/api/core/v1?tab=doc#CSIVolumeSource)
+and
+[`PersistentVolumeClaimVolumeSource`](https://pkg.go.dev/k8s.io/api/core/v1?tab=doc#PersistentVolumeClaimVolumeSource).
 
 ```
 type VolumeSource struct {
@@ -245,7 +255,7 @@ do for a `PersistentVolumeClaimVolumeSource`.
 Recent releases of memcached added [support for using Persistent
 Memory](https://memcached.org/blog/persistent-memory/) (PMEM) instead
 of normal DRAM. When deploying memcached through one of the app
-controllers, `InlineVolumeSource` makes it possible to request a volume
+controllers, `EphemeralVolumeSource` makes it possible to request a volume
 of a certain size from a CSI driver like
 [PMEM-CSI](https://github.com/intel/pmem-csi).
 
@@ -265,7 +275,8 @@ Provisioning a volume might result in a non-empty volume:
 - [generic data populators](https://github.com/kubernetes/enhancements/blob/master/keps/sig-storage/20200120-generic-data-populators.md)
 
 For those, it might make sense to mount the volume read-only inside
-the pod to prevent accidental modification of the data.
+the pod to prevent accidental modification of the data. For example,
+the goal might be to just retrieve the data and/or copy it elsewhere.
 
 ### Risks and Mitigations
 
@@ -366,19 +377,19 @@ violations and name collisions.
 
 ### Feature gate
 
-The `GenericInlineVolumes` feature gate controls whether:
+The `GenericEphemeralVolumes` feature gate controls whether:
 - the new controller is active in the `kube-controller-manager`,
-- new pods can be created with a `InlineVolumeSource`,
-- anything that specifically acts upon an `InlineVolumeSource` (scheduler,
+- new pods can be created with a `EphemeralVolumeSource`,
+- anything that specifically acts upon an `EphemeralVolumeSource` (scheduler,
   kubelet, etc.) instead of merely copying it (statefulset controller)
   accepts the new volume source.
 
-Existing pods with such a volumes will not be scheduled respectively
-started when the feature gate is off.
+Existing pods with such a volume will not be started when the feature
+gate is off.
 
 ### Modifying volumes
 
-Once the PVC for an inline volume has been created, it can be updated
+Once the PVC for an ephemeral volume has been created, it can be updated
 directly like other PVCs. The controller will not interfere with that
 because it never updates PVCs. This can be used to control features
 like volume resizing.
@@ -403,7 +414,7 @@ automatically enable late binding for PVCs which are owned by a pod.
   well as negative case (feature disabled or feature used incorrectly).
 - A new [storage test
   suite](https://github.com/kubernetes/kubernetes/blob/2b2cf8df303affd916bbeda8c2184b023f6ee53c/test/e2e/storage/testsuites/base.go#L84-L94)
-  will be added which tests inline volume creation, usage and deletion
+  will be added which tests ephemeral volume creation, usage and deletion
   in combination with all drivers that support dynamic volume
   provisioning.
 
@@ -441,7 +452,7 @@ version will prevent pods from starting.
 
 * **How can this feature be enabled / disabled in a live cluster?**
   - [X] Feature gate
-    - Feature gate name: GenericInlineVolumes
+    - Feature gate name: GenericEphemeralVolumes
     - Components depending on the feature gate:
       - kube-apiserver
       - kube-controller-manager
@@ -454,11 +465,11 @@ version will prevent pods from starting.
 
 * **Can the feature be disabled once it has been enabled (i.e. can we rollback
   the enablement)?**
-  Yes, by disabling the feature gates. Existing pods will continue to run and
-  volumes will be deleted once they stop. Existing pods with generic inline
-  volumes that haven't started yet will not be able to start up anymore, either
-  because they do not get scheduled because their volumes are missing or because
-  kubelet does not know what to do with the volume.
+  Yes, by disabling the feature gates. Existing pods with generic inline
+  volumes that haven't started yet will not be able to start up anymore, because
+  kubelet does not know what to do with the volume. It also will not know how
+  to unmount generic inline volumes which would cause pods to get stuck, so nodes
+  should be drained before removing the feature gate in kubelet.
 
 * **What happens if we reenable the feature if it was previously rolled back?**
   Pods that got stuck will work again.
@@ -468,146 +479,64 @@ version will prevent pods from starting.
 
 ### Rollout, Upgrade and Rollback Planning
 
-_This section must be completed when targeting beta graduation to a release._
+Will be added before the transition to beta.
 
 * **How can a rollout fail? Can it impact already running workloads?**
-  Try to be as paranoid as possible - e.g. what if some components will restart
-  in the middle of rollout?
 
 * **What specific metrics should inform a rollback?**
 
 * **Were upgrade and rollback tested? Was upgrade->downgrade->upgrade path tested?**
-  Describe manual testing that was done and the outcomes.
-  Longer term, we may want to require automated upgrade/rollback tests, but we
-  are missing a bunch of machinery and tooling and do that now.
 
 * **Is the rollout accompanied by any deprecations and/or removals of features,
   APIs, fields of API types, flags, etc.?**
-  No.
 
 ### Monitoring requirements
 
-_This section must be completed when targeting beta graduation to a release._
+Will be added before the transition to beta.
 
 * **How can an operator determine if the feature is in use by workloads?**
-  Ideally, this should be a metrics. Operations against Kubernetes API (e.g.
-  checking if there are objects with field X set) may be last resort. Avoid
-  logs or events for this purpose.
 
 * **What are the SLIs (Service Level Indicators) an operator can use to
   determine the health of the service?**
-  - [ ] Metrics
-    - Metric name:
-    - [Optional] Aggregation method:
-    - Components exposing the metric:
-  - [ ] Other (treat as last resort)
-    - Details:
 
 * **What are the reasonable SLOs (Service Level Objectives) for the above SLIs?**
-  At the high-level this usually will be in the form of "high percentile of SLI
-  per day <= X". It's impossible to provide a comprehensive guidance, but at the very
-  high level (they needs more precise definitions) those may be things like:
-  - per-day percentage of API calls finishing with 5XX errors <= 1%
-  - 99% percentile over day of absolute value from (job creation time minus expected
-    job creation time) for cron job <= 10%
-  - 99,9% of /health requests per day finish with 200 code
 
 * **Are there any missing metrics that would be useful to have to improve
   observability if this feature?**
-  Describe the metrics themselves and the reason they weren't added (e.g. cost,
-  implementation difficulties, etc.).
 
 ### Dependencies
 
-_This section must be completed when targeting beta graduation to a release._
+Will be added before the transition to beta.
 
 * **Does this feature depend on any specific services running in the cluster?**
-  Think about both cluster-level services (e.g. metrics-server) as well
-  as node-level agents (e.g. specific version of CRI). Focus on external or
-  optional services that are needed. For example, if this feature depends on
-  a cloud provider API, or upon an external software-defined storage or network
-  control plane.
-
-  For each of the fill in the following, thinking both about running user workloads
-  and creating new ones, as well as about cluster-level services (e.g. DNS):
-  - [Dependency name]
-    - Usage description:
-      - Impact of its outage on the feature:
-      - Impact of its degraded performance or high error rates on the feature:
-
 
 ### Scalability
 
-_For alpha, this section is encouraged: reviewers should consider these questions
-and attempt to answer them._
-
-_For beta, this section is required: reviewers must answer these questions._
-
-_For GA, this section is required: approvers should be able to confirms the
-previous answers based on experience in the field._
+Will be added before the transition to beta.
 
 * **Will enabling / using this feature result in any new API calls?**
-  Describe them, providing:
-  - API call type (e.g. PATCH pods)
-  - estimated throughput
-  - originating component(s) (e.g. Kubelet, Feature-X-controller)
-  focusing mostly on:
-  - components listing and/or watching resources they didn't before
-  - API calls that may be triggered by changes of some Kubernetes resources
-    (e.g. update of object X triggers new updates of object Y)
-  - periodic API calls to reconcile state (e.g. periodic fetching state,
-    heartbeats, leader election, etc.)
 
 * **Will enabling / using this feature result in introducing new API types?**
-  Describe them providing:
-  - API type
-  - Supported number of objects per cluster
-  - Supported number of objects per namespace (for namespace-scoped objects)
 
 * **Will enabling / using this feature result in any new calls to cloud
   provider?**
 
 * **Will enabling / using this feature result in increasing size or count
   of the existing API objects?**
-  Describe them providing:
-  - API type(s):
-  - Estimated increase in size: (e.g. new annotation of size 32B)
-  - Estimated amount of new objects: (e.g. new Object X for every existing Pod)
 
 * **Will enabling / using this feature result in increasing time taken by any
   operations covered by [existing SLIs/SLOs][]?**
-  Think about adding additional work or introducing new steps in between
-  (e.g. need to do X to start a container), etc. Please describe the details.
 
 * **Will enabling / using this feature result in non-negligible increase of
   resource usage (CPU, RAM, disk, IO, ...) in any components?**
-  Things to keep in mind include: additional in-memory state, additional
-  non-trivial computations, excessive access to disks (including increased log
-  volume), significant amount of data send and/or received over network, etc.
-  This through this both in small and large cases, again with respect to the
-  [supported limits][].
 
 ### Troubleshooting
 
-Troubleshooting section serves the `Playbook` role as of now. We may consider
-splitting it into a dedicated `Playbook` document (potentially with some monitoring
-details). For now we leave it here though.
-
-_This section must be completed when targeting beta graduation to a release._
+Will be added before the transition to beta.
 
 * **How does this feature react if the API server and/or etcd is unavailable?**
 
 * **What are other known failure modes?**
-  For each of them fill in the following information by copying the below template:
-  - [Failure mode brief description]
-    - Detection: How can it be detected via metrics? Stated another way:
-      how can an operator troubleshoot without loogging into a master or worker node?
-    - Mitigations: What can be done to stop the bleeding, especially for already
-      running user workloads?
-    - Diagnostics: What are the useful log messages and their required logging
-      levels that could help debugging the issue?
-      Not required until feature graduated to Beta.
-    - Testing: Are there any tests for failure mode? If not describe why.
 
 * **What steps should be taken if SLOs are not being met to determine the problem?**
 
