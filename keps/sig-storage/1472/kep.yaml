@@ -16,7 +16,6 @@ approvers:
   - "TODO (?): prod-readiness-approvers, http://git.k8s.io/enhancements/OWNERS_ALIASES"
 see-also:
   - "https://docs.google.com/document/d/1WtX2lRJjZ03RBdzQIZY3IOvmoYiF5JxDX35-SsCIAfg"
-stage: alpha
 latest-milestone: "v1.19"
 milestone:
   alpha: "v1.19"
@@ -27,7 +26,7 @@ feature-gate:
   components:
     - kube-apiserver
     - kube-scheduler
-rollback-supported: true
+disable-supported: true
 
 # The following PRR answers are required at beta release
 #metrics:

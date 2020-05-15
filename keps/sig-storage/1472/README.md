@@ -81,11 +81,11 @@ checklist items _must_ be updated for the enhancement to be released.
 
 Items marked with (R) are required *prior to targeting to a milestone / release*.
 
-- [ ] (R) Enhancement issue in release milestone, which links to KEP dir in [kubernetes/enhancements] (not the initial KEP PR)
+- [x] (R) Enhancement issue in release milestone, which links to KEP dir in [kubernetes/enhancements] (not the initial KEP PR)
 - [ ] (R) KEP approvers have approved the KEP status as `implementable`
 - [ ] (R) Design details are appropriately documented
 - [ ] (R) Test plan is in place, giving consideration to SIG Architecture and SIG Testing input
-- [ ] (R) Graduation criteria is in place
+- [X] (R) Graduation criteria is in place
 - [ ] (R) Production readiness review completed
 - [ ] Production readiness review approved
 - [ ] "Implementation History" section is up-to-date for milestone
@@ -147,14 +147,17 @@ reduce the risk of that happening.
   storage and for drivers where the capacity depends on parameters in
   the storage class.
 
+* Support gathering that data for CSI drivers.
+
 * Increase the chance of choosing a node for which volume creation
   will succeed by tracking the currently available capacity available
   through a CSI driver and using that information during pod
   scheduling.
 
+
 ### Non-Goals
 
-* Only CSI drivers will be supported.
+* Drivers other than CSI will not be supported.
 
 * No attempts will be made to model how capacity will be affected by
   pending volume operations. This would depend on internal driver
@@ -249,7 +252,7 @@ The key approach in this proposal for solving this is to gather
 capacity information, store it in the API server, and then use that
 information in the scheduler. That information then flows
 through different components:
-1. storage backend
+1. Storage backend
 2. CSI driver
 3. Kubernetes-CSI sidecar
 4. API server
@@ -300,11 +303,15 @@ type CSIStorageCapacity struct {
 	// +optional
 	metav1.ObjectMeta
 
-    // Spec contains the properties that describe one capacity value.
+    // Spec contains the fixed properties of one capacity value.
     Spec CSIStorageCapacitySpec
+
+    // Status contains the properties that can change over time.
+    Status CSIStorageCapacityStatus
 }
 
-// CSIStorageCapacitySpec contains the properties that describe one capacity value.
+// CSIStorageCapacitySpec contains the fixed properties of one capacity value.
+// one capacity value.
 type CSIStorageCapacitySpec struct {
 	// The CSI driver that provides the storage.
 	// This must be the string returned by the CSI GetPluginName() call.
@@ -319,21 +326,22 @@ type CSIStorageCapacitySpec struct {
 	// The storage class name of the StorageClass which provided the
     // additional parameters for the GetCapacity call.
 	StorageClassName string
+}
 
+// CSIStorageCapacityStatus contains the properties that can change over time.
+type CSIStorageCapacityStatus struct {
 	// Capacity is the value reported by the CSI driver in its GetCapacityResponse.
     // Depending on how the driver is implemented, this might be the total
     // size of the available storage which is only available when allocating
     // multiple smaller volumes ("total available capacity") or the
     // actual size that a volume may have ("maximum volume size").
-    //
-    // It is optional because in the future, other ways of describing capacity
-    // might get added. If not set, the scheduler will simply ignore the
-    // CSIStorageCapacity object.
-    //
-	// +optional
 	Capacity *resource.Quantity
 }
 ```
+
+`Capacity` is a pointer because `TotalCapacity` and
+`MaximumVolumeSize` might be added later, in which case `nil` for
+`Capacity` will become allowed.
 
 Compared to the alternatives with a single object per driver (see
 [`CSIDriver.Status`](#csidriverstatus) below) and one object per
@@ -355,11 +363,10 @@ The downsides are:
 apiVersion: storage.k8s.io/v1alpha1
 kind: CSIStorageCapacity
 metadata:
-  name: sp-ab96d356-0d31-11ea-ade1-8b7e883d1af1
+  name: csisc-ab96d356-0d31-11ea-ade1-8b7e883d1af1
 spec:
   driverName: hostpath.csi.k8s.io
   storageClassName: some-storage-class
-  capacity: 256G
   nodeTopology:
     nodeSelectorTerms:
     - matchExpressions:
@@ -367,15 +374,16 @@ spec:
         operator: In
         values:
         - node-1
+status:
+  capacity: 256G
 
 apiVersion: storage.k8s.io/v1alpha1
 kind: CSIStorageCapacity
 metadata:
-  name: sp-c3723f32-0d32-11ea-a14f-fbaf155dff50
+  name: csisc-c3723f32-0d32-11ea-a14f-fbaf155dff50
 spec:
   driverName: hostpath.csi.k8s.io
   storageClassName: some-storage-class
-  capacity: 512G
   nodeTopology:
     nodeSelectorTerms:
     - matchExpressions:
@@ -383,6 +391,8 @@ spec:
         operator: In
         values:
         - node-2
+status:
+  capacity: 512G
 ```
 
 ##### Example: affect of storage classes
@@ -391,11 +401,10 @@ spec:
 apiVersion: storage.k8s.io/v1alpha1
 kind: CSIStorageCapacity
 metadata:
-  name: sp-9c17f6fc-6ada-488f-9d44-c5d63ecdf7a9
+  name: csisc-9c17f6fc-6ada-488f-9d44-c5d63ecdf7a9
 spec:
   driverName: lvm
   storageClassName: striped
-  capacity: 256G
   nodeTopology:
     nodeSelectorTerms:
     - matchExpressions:
@@ -403,15 +412,16 @@ spec:
         operator: In
         values:
         - node-1
+status:
+  capacity: 256G
 
 apiVersion: storage.k8s.io/v1alpha1
 kind: CSIStorageCapacity
 metadata:
-  name: sp-f0e03868-954d-11ea-9d78-9f197c0aea6f
+  name: csisc-f0e03868-954d-11ea-9d78-9f197c0aea6f
 spec:
   driverName: lvm
   storageClassName: mirrored
-  capacity: 128G
   nodeTopology:
     nodeSelectorTerms:
     - matchExpressions:
@@ -419,6 +429,8 @@ spec:
         operator: In
         values:
         - node-1
+status:
+  capacity: 128G
 ```
 
 ##### Example: network attached storage
@@ -427,11 +439,10 @@ spec:
 apiVersion: storage.k8s.io/v1alpha1
 kind: CSIStorageCapacity
 metadata:
-  name: sp-b0963bb5-37cf-415d-9fb1-667499172320
+  name: csisc-b0963bb5-37cf-415d-9fb1-667499172320
 spec:
   driverName: pd.csi.storage.gke.io
   storageClassName: some-storage-class
-  capacity: 128G
   nodeTopology:
     nodeSelectorTerms:
     - matchExpressions:
@@ -439,15 +450,16 @@ spec:
         operator: In
         values:
         - us-east-1
+status:
+  capacity: 128G
 
 apiVersion: storage.k8s.io/v1alpha1
 kind: CSIStorageCapacity
 metadata:
-  name: sp-64103396-0d32-11ea-945c-e3ede5f0f3ae
+  name: csisc-64103396-0d32-11ea-945c-e3ede5f0f3ae
 spec:
   driverName: pd.csi.storage.gke.io
   storageClassName: some-storage-class
-  capacity: 256G
   nodeTopology:
     nodeSelectorTerms:
     - matchExpressions:
@@ -455,6 +467,8 @@ spec:
         operator: In
         values:
         - us-west-1
+status:
+  capacity: 256G
 ```
 
 #### CSIDriver.spec.storageCapacity
@@ -467,7 +481,7 @@ objects with capacity information and wants the Kubernetes scheduler
 to rely on that information when making scheduling decisions that
 involve volumes that need to be created by the driver.
 
-If not set, the scheduler makes such decisions without considering
+If not set or false, the scheduler makes such decisions without considering
 whether the driver really can create the volumes (the current situation).
 
 ### Updating capacity information with external-provisioner
@@ -578,8 +592,8 @@ deployment gets removed before it has a chance to clean up, each
 `CSIStorageCapacity` object needs an [owner
 reference](https://godoc.org/k8s.io/apimachinery/pkg/apis/meta/v1#OwnerReference).
 
-For central provisioning, that has to be the deployment or stateful
-set that defines the provisioner pods. That way, provisioning can
+For central provisioning, that has to be the Deployment or StatefulSet
+that defines the provisioner pods. That way, provisioning can
 continue seamlessly when there are multiple instances with leadership
 election.
 
@@ -636,7 +650,7 @@ created for other pods. Those scenarios remain problematic.
 Trying to model how different volumes affect capacity would be
 difficult. If the capacity represents "maximum volume size 10GiB", it may be possible
 to create exactly one such volume or several, so rejecting the
-pool after one volume could be a false negative. With "available
+node after one volume could be a false negative. With "available
 capacity 10GiB" it may or may not be possible to create two volumes of
 5GiB each, so accepting the node for two such volumes could be a false
 positive.
@@ -706,6 +720,7 @@ checks for events that describe the problem.
   - extensions of the API that may or may not be needed (like
     [ignoring storage class
     parameters](#storage-class-parameters-that-never-affect-capacity))
+  - [advanced storage placement](https://github.com/kubernetes/enhancements/pull/1347)
 - Tests are in Testgrid and linked in KEP
 
 #### Beta -> GA Graduation
@@ -789,146 +804,64 @@ enhancement:
 
 ### Rollout, Upgrade and Rollback Planning
 
-_This section must be completed when targeting beta graduation to a release._
+Will be added before the transition to beta.
 
 * **How can a rollout fail? Can it impact already running workloads?**
-  Try to be as paranoid as possible - e.g. what if some components will restart
-  in the middle of rollout?
 
 * **What specific metrics should inform a rollback?**
 
 * **Were upgrade and rollback tested? Was upgrade->downgrade->upgrade path tested?**
-  Describe manual testing that was done and the outcomes.
-  Longer term, we may want to require automated upgrade/rollback tests, but we
-  are missing a bunch of machinery and tooling and do that now.
 
 * **Is the rollout accompanied by any deprecations and/or removals of features,
   APIs, fields of API types, flags, etc.?**
-  Even if applying deprecation policies, they may still surprise some users.
 
 ### Monitoring requirements
 
-_This section must be completed when targeting beta graduation to a release._
+Will be added before the transition to beta.
 
 * **How can an operator determine if the feature is in use by workloads?**
-  Ideally, this should be a metrics. Operations against Kubernetes API (e.g.
-  checking if there are objects with field X set) may be last resort. Avoid
-  logs or events for this purpose.
 
 * **What are the SLIs (Service Level Indicators) an operator can use to
   determine the health of the service?**
-  - [ ] Metrics
-    - Metric name:
-    - [Optional] Aggregation method:
-    - Components exposing the metric:
-  - [ ] Other (treat as last resort)
-    - Details:
 
 * **What are the reasonable SLOs (Service Level Objectives) for the above SLIs?**
-  At the high-level this usually will be in the form of "high percentile of SLI
-  per day <= X". It's impossible to provide a comprehensive guidance, but at the very
-  high level (they needs more precise definitions) those may be things like:
-  - per-day percentage of API calls finishing with 5XX errors <= 1%
-  - 99% percentile over day of absolute value from (job creation time minus expected
-    job creation time) for cron job <= 10%
-  - 99,9% of /health requests per day finish with 200 code
 
 * **Are there any missing metrics that would be useful to have to improve
   observability if this feature?**
-  Describe the metrics themselves and the reason they weren't added (e.g. cost,
-  implementation difficulties, etc.).
 
 ### Dependencies
 
-_This section must be completed when targeting beta graduation to a release._
+Will be added before the transition to beta.
 
 * **Does this feature depend on any specific services running in the cluster?**
-  Think about both cluster-level services (e.g. metrics-server) as well
-  as node-level agents (e.g. specific version of CRI). Focus on external or
-  optional services that are needed. For example, if this feature depends on
-  a cloud provider API, or upon an external software-defined storage or network
-  control plane.
-
-  For each of the fill in the following, thinking both about running user workloads
-  and creating new ones, as well as about cluster-level services (e.g. DNS):
-  - [Dependency name]
-    - Usage description:
-      - Impact of its outage on the feature:
-      - Impact of its degraded performance or high error rates on the feature:
-
 
 ### Scalability
 
-_For alpha, this section is encouraged: reviewers should consider these questions
-and attempt to answer them._
-
-_For beta, this section is required: reviewers must answer these questions._
-
-_For GA, this section is required: approvers should be able to confirms the
-previous answers based on experience in the field._
+Will be added before the transition to beta.
 
 * **Will enabling / using this feature result in any new API calls?**
-  Describe them, providing:
-  - API call type (e.g. PATCH pods)
-  - estimated throughput
-  - originating component(s) (e.g. Kubelet, Feature-X-controller)
-  focusing mostly on:
-  - components listing and/or watching resources they didn't before
-  - API calls that may be triggered by changes of some Kubernetes resources
-    (e.g. update of object X triggers new updates of object Y)
-  - periodic API calls to reconcile state (e.g. periodic fetching state,
-    heartbeats, leader election, etc.)
 
 * **Will enabling / using this feature result in introducing new API types?**
-  Describe them providing:
-  - API type
-  - Supported number of objects per cluster
-  - Supported number of objects per namespace (for namespace-scoped objects)
 
 * **Will enabling / using this feature result in any new calls to cloud
   provider?**
 
 * **Will enabling / using this feature result in increasing size or count
   of the existing API objects?**
-  Describe them providing:
-  - API type(s):
-  - Estimated increase in size: (e.g. new annotation of size 32B)
-  - Estimated amount of new objects: (e.g. new Object X for every existing Pod)
 
 * **Will enabling / using this feature result in increasing time taken by any
   operations covered by [existing SLIs/SLOs][]?**
-  Think about adding additional work or introducing new steps in between
-  (e.g. need to do X to start a container), etc. Please describe the details.
 
 * **Will enabling / using this feature result in non-negligible increase of
   resource usage (CPU, RAM, disk, IO, ...) in any components?**
-  Things to keep in mind include: additional in-memory state, additional
-  non-trivial computations, excessive access to disks (including increased log
-  volume), significant amount of data send and/or received over network, etc.
-  This through this both in small and large cases, again with respect to the
-  [supported limits][].
 
 ### Troubleshooting
 
-Troubleshooting section serves the `Playbook` role as of now. We may consider
-splitting it into a dedicated `Playbook` document (potentially with some monitoring
-details). For now we leave it here though.
-
-_This section must be completed when targeting beta graduation to a release._
+Will be added before the transition to beta.
 
 * **How does this feature react if the API server and/or etcd is unavailable?**
 
 * **What are other known failure modes?**
-  For each of them fill in the following information by copying the below template:
-  - [Failure mode brief description]
-    - Detection: How can it be detected via metrics? Stated another way:
-      how can an operator troubleshoot without loogging into a master or worker node?
-    - Mitigations: What can be done to stop the bleeding, especially for already
-      running user workloads?
-    - Diagnostics: What are the useful log messages and their required logging
-      levels that could help debugging the issue?
-      Not required until feature graduated to Beta.
-    - Testing: Are there any tests for failure mode? If not describe why.
 
 * **What steps should be taken if SLOs are not being met to determine the problem?**
 
