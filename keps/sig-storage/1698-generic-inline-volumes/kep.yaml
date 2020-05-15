@@ -23,7 +23,7 @@ feature-gate:
     - kube-apiserver
     - kube-controller-manager
     - kubelet
-rollback-supported: true
+disable-supported: true
 
 # The following PRR answers are required at beta release
 #metrics:
