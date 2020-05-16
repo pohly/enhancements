@@ -28,7 +28,6 @@
     - [Available capacity vs. maximum volume size](#available-capacity-vs-maximum-volume-size)
     - [Without central controller](#without-central-controller)
     - [With central controller](#with-central-controller)
-    - [With central controller, generic solution](#with-central-controller-generic-solution)
     - [Determining parameters](#determining-parameters)
     - [CSIStorageCapacity lifecycle](#csistoragecapacity-lifecycle)
   - [Using capacity information](#using-capacity-information)
@@ -268,9 +267,7 @@ A sidecar, external-provisioner in this proposal, will be extended to
 handle the management of the new objects. This follows the normal
 approach that integration into Kubernetes is managed as part of the
 CSI driver deployment, ideally without having to modify the CSI driver
-itself. This will work without changes for some storage systems while
-others may have to support [a new CSI API
-call](#with-central-controller-generic-solution).
+itself.
 
 ### Pod scheduling
 
@@ -558,12 +555,6 @@ capacity. The node selector uses the topology key/value pairs as node
 labels. That works because kubelet automatically labels nodes based on
 the CSI drivers that run on that node.
 
-#### With central controller, generic solution
-
-For all other cases, a new CSI call to enumerate storage topology
-segments will be needed. That call then might also include other
-information for each segment.
-
 #### Determining parameters
 
 After determining the topology as described above,
@@ -608,8 +599,8 @@ controlled via node labels).
 While external-provisioner runs, it needs to update and potentially
 delete `CSIStorageCapacity` objects:
 - when nodes change (for central provisioning)
-- when storage classes change (for persistent volumes)
-- when volumes were created or deleted (for central provisioning)
+- when storage classes change
+- when volumes were created or deleted
 - when volumes are resized or snapshots are created or deleted (for persistent volumes)
 - periodically, to detect changes in the underlying backing store (all cases)
 
@@ -714,7 +705,7 @@ checks for events that describe the problem.
 
 - Gather feedback from developers and users
 - Integration with [Cluster Autoscaler](https://github.com/kubernetes/autoscaler)
-- Generic solution for identifying storage pools
+- Extra CSI API call for identifying storage topology, if needed
 - Re-evaluate API choices, considering:
   - performance
   - extensions of the API that may or may not be needed (like
