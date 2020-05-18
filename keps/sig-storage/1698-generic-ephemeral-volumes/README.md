@@ -58,7 +58,7 @@ If any of those approvers is no longer appropriate than changes to that list
 should be approved by the remaining approvers and/or the owning SIG (or
 SIG Architecture for cross cutting KEPs).
 -->
-# KEP-1698: generic inline volumes
+# KEP-1698: generic ephemeral inline volumes
 
 <!-- toc -->
 - [Release Signoff Checklist](#release-signoff-checklist)
@@ -142,6 +142,9 @@ inside a pod spec. Those inline volumes then get converted to normal
 volume claim objects for provisioning, so storage drivers do not need
 to be modified.
 
+The lifecycle of those volumes is ephemeral: they will get deleted
+once the pod terminates.
+
 Because this is expected to be slower than [CSI ephemeral inline
 volumes](https://github.com/kubernetes/enhancements/issues/596), both
 approaches will need to be supported.
@@ -175,8 +178,7 @@ by a more traditional storage system because:
 - A normal, unmodified storage driver can be selected via a storage class.
 - The volume will be created using the normal storage provisioning
   mechanism, without having to modify the driver or its deployment.
-- Storage capacity tracking can be enabled also for such inline
-  volumes.
+- Storage capacity tracking can be enabled also for such volumes.
 
 ### Non-Goals
 
@@ -359,10 +361,10 @@ Other meta data is copied from the `VolumeClaimTemplate.ObjectMeta`.
 
 ### Preventing accidental collision with existing PVCs
 
-The controller will only create missing PVCs. It does not need to
+The new controller will only create missing PVCs. It neither needs to
 delete (handled by garbage collection) nor update (`PodSpec.Volumes`
 is immutable) existing PVCs. Therefore there is no risk that the
-controller will accidentally modify unrelated PVCs.
+new controller will accidentally modify unrelated PVCs.
 
 The volume scheduling library and kubelet must check that a PVC is
 owned by the pod before using it. Otherwise they must ignored it. This
@@ -390,7 +392,7 @@ gate is off.
 ### Modifying volumes
 
 Once the PVC for an ephemeral volume has been created, it can be updated
-directly like other PVCs. The controller will not interfere with that
+directly like other PVCs. The new controller will not interfere with that
 because it never updates PVCs. This can be used to control features
 like volume resizing.
 
@@ -436,10 +438,9 @@ automatically enable late binding for PVCs which are owned by a pod.
 
 ### Upgrade / Downgrade Strategy
 
-When downgrading to a cluster which does not support generic inline
+When downgrading to a cluster which does not support generic ephemeral inline
 volumes (either by disabling the feature flag or an actual version
-downgrade), pods using generic inline volumes will no longer be
-scheduled or started.
+downgrade), pods using such volumes will no longer be started.
 
 ### Version Skew Strategy
 
@@ -459,16 +460,16 @@ version will prevent pods from starting.
       - kubelet
 
 * **Does enabling the feature change any default behavior?**
-  If users are allowed to create pods but not PVCs, then generic inline volumes
+  If users are allowed to create pods but not PVCs, then generic ephemeral inline volumes
   grants them permission to create PVCs indirectly. Cluster admins must take
   that into account in their permission model.
 
 * **Can the feature be disabled once it has been enabled (i.e. can we rollback
   the enablement)?**
-  Yes, by disabling the feature gates. Existing pods with generic inline
+  Yes, by disabling the feature gates. Existing pods with generic ephemeral inline
   volumes that haven't started yet will not be able to start up anymore, because
   kubelet does not know what to do with the volume. It also will not know how
-  to unmount generic inline volumes which would cause pods to get stuck, so nodes
+  to unmount such volumes which would cause pods to get stuck, so nodes
   should be drained before removing the feature gate in kubelet.
 
 * **What happens if we reenable the feature if it was previously rolled back?**
