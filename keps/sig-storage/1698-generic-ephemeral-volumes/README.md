@@ -233,7 +233,7 @@ type VolumeSource struct {
 ```
 
 A new controller in `kube-controller-manager` is responsible for
-creating new PVCs for each such inline volume. It does that:
+creating new PVCs for each such ephemeral inline volume. It does that:
 - with a deterministic name that is a concatenation of pod name and
   the `Volume.Name` of the volume,
 - in the namespace of the pod,
@@ -300,8 +300,8 @@ it to circumvent other policies.
 
 ## Example
 
-Here is a full example for a higher-level object that uses ephemeral
-inline volumes:
+Here is a full example for a higher-level object that uses a generic ephemeral
+inline volume:
 
 ```
 apiVersion: apps/v1
