@@ -46,6 +46,11 @@
   - [Troubleshooting](#troubleshooting)
 - [Implementation History](#implementation-history)
 - [Drawbacks](#drawbacks)
+  - [No modeling of storage capacity usage](#no-modeling-of-storage-capacity-usage)
+  - [&quot;Total available capacity&quot; vs. &quot;maximum volume size&quot;](#total-available-capacity-vs-maximum-volume-size)
+  - [Prioritization of nodes](#prioritization-of-nodes)
+  - [Integration with <a href="https://github.com/kubernetes/autoscaler">Cluster Autoscaler</a>](#integration-with-cluster-autoscaler)
+  - [Alternative solutions](#alternative-solutions)
 - [Alternatives](#alternatives)
   - [CSI drivers without topology support](#csi-drivers-without-topology-support)
   - [Storage class parameters that never affect capacity](#storage-class-parameters-that-never-affect-capacity)
@@ -704,7 +709,7 @@ checks for events that describe the problem.
 #### Alpha -> Beta Graduation
 
 - Gather feedback from developers and users
-- Integration with [Cluster Autoscaler](https://github.com/kubernetes/autoscaler)
+- Evaluate and where necessary, address [drawbacks](#drawbacks)
 - Extra CSI API call for identifying storage topology, if needed
 - Re-evaluate API choices, considering:
   - performance
@@ -867,9 +872,81 @@ Will be added before the transition to beta.
 
 ## Drawbacks
 
-The attempt to define and implement a generic solution may end up with
-something that isn't capable enough in practice because it does not
-know enough about specific limitations of individual CSI drivers.
+### No modeling of storage capacity usage
+
+The current proposal avoids making assumptions about how pending
+volume creation requests will affect capacity. This may be a problem
+for a busy cluster where a lot of scheduling decisions need to be
+made for pods with volumes that need storage capacity tracking. In
+such a scenario, the scheduler has to make those decisions based on
+outdated information, in particular when making one scheduling
+decisions affects the next decision.
+
+We need to investigate:
+- Whether this really is a problem in practice, i.e. identify
+  workloads and drivers where this problem occurs.
+- Whether introducing some simple modeling of capacity helps.
+- Whether prioritization of nodes helps.
+
+For a discussion around modeling storage capacity, see the proposal to
+add ["total capacity" to
+CSI](https://github.com/container-storage-interface/spec/issues/301).
+
+### "Total available capacity" vs. "maximum volume size"
+
+The CSI spec around `GetCapacityResponse.capacity` [is
+vague](https://github.com/container-storage-interface/spec/issues/432)
+because it ignores fragmentation issues. The current Kubernetes API
+proposal follows the design principle that Kubernetes should deviate
+from the CSI spec as little as possible. It therefore directly copies
+that value and thus has the same issue.
+
+The proposed usage (comparison of volume size against available
+capacity) works either way, but having separate fields for "total
+available capacity" and "maximum volume size" would be more precise
+and enable additional features like even volume spreading by
+prioritizing nodes based on "total available capacity"
+
+The goal is to clarify that first in the CSI spec and then revise the
+Kubernetes API.
+
+### Prioritization of nodes
+
+The initial goal is to just implement filtering of nodes,
+i.e. excluding nodes which are known to not have enough capacity left
+for a volume. This works best if CSI drivers report "maximum volume
+size".
+
+To avoid the situation where multiple pods get scheduled onto the same
+node in parallel and that node then runs out of storage, preferring
+nodes that have more total available capacity may be better. This can
+be achieved by prioritizing nodes, ideally with information about both
+"maximum volume size" (for filtering) and "total available capacity"
+(for prioritization).
+
+### Integration with [Cluster Autoscaler](https://github.com/kubernetes/autoscaler)
+
+The autoscaler simulates the effect of adding more nodes to the
+cluster. If that simulations determines that adding those nodes will
+enable the scheduling of pods that otherwise would be stuck, it
+triggers the creation of those nodes.
+
+That approach has problems when pod scheduling involves decisions
+based on storage capacity:
+- For node-local storage, adding a new node may make more storage
+  available that the simulation didn't know about, so it may have
+  falsely decided against adding nodes because the volume check
+  incorrectly replied that adding the node would not help for a pod.
+- For network-attached storage, no CSI topology information is
+  available for the simulated node, so even if a pod would have access
+  to available storage and thus could run on a new node, the
+  simulation may decide otherwise.
+
+It may be possible to solve this by pre-configuring some information
+(local storage capacity of future nodes and their CSI topology). This
+needs to be explored further.
+
+### Alternative solutions
 
 At the moment, storage vendor can already achieve the same goals
 entirely without changes in Kubernetes or Kubernetes-CSI, it's just a
@@ -879,6 +956,9 @@ design](https://github.com/cybozu-go/topolvm/blob/master/docs/design.md#diagram)
 - scheduler extender (probably slower than a builtin scheduler
   callback)
 
+Not only is this more work for the storage vendor, such a solution
+then also is harder to deploy for admins because configuring a
+scheduler extender varies between clusters.
 
 ## Alternatives
 
