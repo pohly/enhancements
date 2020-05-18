@@ -332,18 +332,20 @@ type CSIStorageCapacitySpec struct {
 
 // CSIStorageCapacityStatus contains the properties that can change over time.
 type CSIStorageCapacityStatus struct {
-	// Capacity is the value reported by the CSI driver in its GetCapacityResponse.
-    // Depending on how the driver is implemented, this might be the total
-    // size of the available storage which is only available when allocating
-    // multiple smaller volumes ("total available capacity") or the
-    // actual size that a volume may have ("maximum volume size").
-	Capacity *resource.Quantity
+	// AvailableCapacity is the value reported by the CSI driver in its GetCapacityResponse
+	// for a GetCapacityRequest with topology and parameters that match the
+	// CSIStorageCapacitySpec.
+	//
+	// The semantic is currently (CSI spec 1.2) defined as:
+	// The available capacity, in bytes, of the storage that can be used
+	// to provision volumes.
+	AvailableCapacity *resource.Quantity
 }
 ```
 
-`Capacity` is a pointer because `TotalCapacity` and
+`AvailableCapacity` is a pointer because `TotalCapacity` and
 `MaximumVolumeSize` might be added later, in which case `nil` for
-`Capacity` will become allowed.
+`AvailableCapacity` will become allowed.
 
 Compared to the alternatives with a single object per driver (see
 [`CSIDriver.Status`](#csidriverstatus) below) and one object per
@@ -377,7 +379,7 @@ spec:
         values:
         - node-1
 status:
-  capacity: 256G
+  availableCapacity: 256G
 
 apiVersion: storage.k8s.io/v1alpha1
 kind: CSIStorageCapacity
@@ -394,7 +396,7 @@ spec:
         values:
         - node-2
 status:
-  capacity: 512G
+  availableCapacity: 512G
 ```
 
 ##### Example: affect of storage classes
@@ -415,7 +417,7 @@ spec:
         values:
         - node-1
 status:
-  capacity: 256G
+  availableCapacity: 256G
 
 apiVersion: storage.k8s.io/v1alpha1
 kind: CSIStorageCapacity
@@ -432,7 +434,7 @@ spec:
         values:
         - node-1
 status:
-  capacity: 128G
+  availableCapacity: 128G
 ```
 
 ##### Example: network attached storage
@@ -453,7 +455,7 @@ spec:
         values:
         - us-east-1
 status:
-  capacity: 128G
+  availableCapacity: 128G
 
 apiVersion: storage.k8s.io/v1alpha1
 kind: CSIStorageCapacity
@@ -470,7 +472,7 @@ spec:
         values:
         - us-west-1
 status:
-  capacity: 256G
+  availableCapacity: 256G
 ```
 
 #### CSIDriver.spec.storageCapacity
