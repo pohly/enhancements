@@ -479,7 +479,7 @@ status:
 
 A new field `storageCapacity` of type `boolean` with default `false`
 in
-[CSIDriver.spec](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.16/#csidriverspec-v1beta1-storage-k8s-io)
+[CSIDriver.spec](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.18/#csidriverspec-v1-storage-k8s-io)
 indicates whether a driver deployment will create `CSIStorageCapacity`
 objects with capacity information and wants the Kubernetes scheduler
 to rely on that information when making scheduling decisions that
@@ -505,7 +505,7 @@ behavior (like extending the `CSIDriver` API).
 The CSI spec up to and including the current version 1.2 just
 specifies that ["the available
 capacity"](https://github.com/container-storage-interface/spec/blob/314ac542302938640c59b6fb501c635f27015326/lib/go/csi/csi.pb.go#L2548-L2554)
-is to be returned by the driver. It is left open whether that means
+is to be returned by the driver. It is [left open](https://github.com/container-storage-interface/spec/issues/432) whether that means
 that a volume of that size can be created. This KEP uses the reported
 capacity to rule out pools which clearly have insufficient storage
 because the reported capacity is smaller than the size of a
@@ -539,15 +539,13 @@ topology information in `NodeGetInfoResponse.accessible_topology` that
 matches the storage pool(s) that it has access to, with granularity
 that matches the most restrictive pool.
 
-For example, if the driver runs in a node with zone/region/rack
-topology and has access to one per-zone pool and one per-zone/region
-pool, then the driver should report the zone/region of the second pool
-as its topology.
-
-This is a slight deviation from the CSI spec, which defines that
-"`accessible_topology` specifies where the *node* is accessible
-from". For node-local storage there is no difference, but for
-network-attached storage there might be one.
+For example, if the driver runs in a node with region/rack topology
+and has access to per-region storage as well as per-rack storage, then
+the driver should report topology with region/rack as its keys. If it
+only has access to per-region storage, then it should just use region
+as key. If it uses region/rack, then the proposed approach below will
+still work, but at the cost of creating redundant `CSIStorageCapacity`
+objects.
 
 Assuming that a CSI driver meets the above requirement and enables
 this mode, external-provisioner then can identify pools as follows:
@@ -968,9 +966,7 @@ scheduler extender varies between clusters.
 
 To simplify the implementation of external-provisioner, [topology
 support](https://kubernetes-csi.github.io/docs/topology.html) is
-expected from a CSI driver. A driver which does not really need
-topology support can add it simply by always returning the same static
-`NodeGetInfoResponse.AccessibleTopology`.
+expected from a CSI driver.
 
 ### Storage class parameters that never affect capacity
 
