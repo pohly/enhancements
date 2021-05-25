@@ -158,8 +158,8 @@ demonstrate the interest in a KEP within the wider Kubernetes community.
 -->
 
 Originally, Kubernetes and its scheduler only tracked CPU and RAM as
-resources for containers. Later, support for storage and discreet,
-countable per-node custom resources was added. The device plugin
+resources for containers. Later, support for storage and discrete,
+countable per-node extended resources was added. The device plugin
 interface then made such local resources available to containers. But
 for many newer devices, this approach and the Kubernetes API for
 requesting these custom resources are too limited:
@@ -213,7 +213,7 @@ requesting these custom resources are too limited:
   on the container image, and device plugins do not have access to the
   container image.
 
-- *Perform runtime-specific operations*: When deploying a container
+- *Perform container runtime specific operations*: When deploying a container
   that needs access to a device, I would like to be able to reuse the
   same pod spec, irrespective of the underlying container runtime in
   use (e.g. kata vs. runc).
@@ -656,7 +656,7 @@ type PodResource struct {
    ResourceClaimName *string
 
     // Will be used to create a stand-alone ResourceClaim to allocate the resource.
-    // The pod in which this EphemeralVolumeSource is embedded will be the
+    // The pod in which this PodResource is embedded will be the
     // owner of the ResourceClaim, i.e. the ResourceClaim will be deleted together with the
     // pod.  The name of the ResourceClaim will be `<pod name>-<resource name>` where
     // `<resource name>` is the name PodResource.Name
@@ -760,7 +760,7 @@ This operation MUST be idempotent. If the resource corresponding to
 the `resource_id` has already been prepared, the Plugin MUST reply `0
 OK`.
 
-If this RPC failed, or the CO does not know if it failed or not, it
+If this RPC failed, or kubelet does not know if it failed or not, it
 MAY choose to call `NodePrepareResource` again, or choose to call
 `NodeUnprepareResource`.
 
@@ -794,7 +794,7 @@ message NodePrepareResourceResponse {
 If the plugin is unable to complete the NodePrepareResource call
 successfully, it MUST return a non-ok gRPC code in the gRPC status.
 If the conditions defined below are encountered, the plugin MUST
-return the specified gRPC error code.  The CO MUST implement the
+return the specified gRPC error code.  Kublet MUST implement the
 specified error recovery behavior when it encounters the gRPC error
 code.
 
@@ -808,14 +808,14 @@ code.
 A Node Plugin MUST implement this RPC call. This RPC is a reverse
 operation of `NodePrepareResource`. This RPC MUST undo the work by
 the corresponding `NodePrepareResource`. This RPC SHALL be called by
-the CO at least once for each successful `NodePrepareResource`. The
+kubelet at least once for each successful `NodePrepareResource`. The
 Plugin SHALL assume that this RPC will be executed on the node where
 the resource is being used.
 
 This RPC is called by kubelet when the Pod using the resource is being
 deleted.
 
-This operation MUST be idempotent. If this RPC failed, or the CO does
+This operation MUST be idempotent. If this RPC failed, or kubelet does
 not know if it failed or not, it can choose to call
 `NodeUnprepareResource` again.
 
@@ -835,7 +835,7 @@ message NodeUnprepareResourceResponse {
 If the plugin is unable to complete the NodeUprepareResource call
 successfully, it MUST return a non-ok gRPC code in the gRPC status.
 If the conditions defined below are encountered, the plugin MUST
-return the specified gRPC error code.  The CO MUST implement the
+return the specified gRPC error code.  Kubelet MUST implement the
 specified error recovery behavior when it encounters the gRPC error
 code.
 
@@ -1309,7 +1309,7 @@ custom CSI driver to manage resources.
 
 The user experience with that approach is poor because per-resource
 parameters must be stored in annotations of a PVC due to the lack of
-custom per-PVC parameters. Such parameters were [proposed
+custom per-PVC parameters. Passing annotations as additional parameters was [proposed
 before](https://github.com/kubernetes-csi/external-provisioner/issues/86)
 but were essentially [rejected by
 SIG-Storage](https://github.com/kubernetes-csi/external-provisioner/issues/86#issuecomment-465836185)
@@ -1346,7 +1346,7 @@ becomes more complex because of these new use cases.
 The Device Plugins API could be extended to implement some of the
 requirements mentioned in the “Motivation” section of this
 document. There were certain attempts to do it, for example an attempt
-to add ‘Deallocate’ API call and bring information about the pod to
+to [add ‘Deallocate’ API call](https://github.com/kubernetes/enhancements/pull/1949) and bring information about the pod to
 the device plugin.
 
 However, most of the requirements couldn’t be satisfied using this
@@ -1356,7 +1356,7 @@ allocation couldn’t be done without changing the way resources are
 currently declared on the Pod and Device Plugin level.
 
 It should be also taken into account that Device Plugins API is
-stable. Introducing incompatible changes to it may not be accepted by
+beta. Introducing incompatible changes to it may not be accepted by
 the Kubernetes community.
 
 ## Infrastructure Needed (Optional)
