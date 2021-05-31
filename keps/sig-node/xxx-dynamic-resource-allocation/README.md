@@ -185,7 +185,9 @@ requesting these custom resources are too limited:
   device.
 
   *Limitation*: Current implementation of the device plugin doesn’t
-  allow to allocate part of the device.
+  allow to allocate part of the device because parameters are too limited
+  and Kubernetes doesn't have enough information about the extended
+  resources on a node to decide whether they can be shared.
 
 - *Optional allocation*: When deploying workload I’d like to specify
   soft(optional) device requirements. If the device exists and it’s
