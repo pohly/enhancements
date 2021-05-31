@@ -1346,14 +1346,16 @@ becomes more complex because of these new use cases.
 The Device Plugins API could be extended to implement some of the
 requirements mentioned in the “Motivation” section of this
 document. There were certain attempts to do it, for example an attempt
-to [add ‘Deallocate’ API call](https://github.com/kubernetes/enhancements/pull/1949) and bring information about the pod to
-the device plugin.
+to [add ‘Deallocate’ API call](https://github.com/kubernetes/enhancements/pull/1949) and [pass pod annotations to 'Allocate' API call](https://github.com/kubernetes/kubernetes/pull/61775)
 
 However, most of the requirements couldn’t be satisfied using this
 approach as they would require major incompatible changes in the
 Device Plugins API. For example: partial and optional resource
 allocation couldn’t be done without changing the way resources are
 currently declared on the Pod and Device Plugin level.
+
+Extending the Device Plugins API to use [Container Device Interface](https://github.com/container-orchestrated-devices/container-device-interface)
+would help address some of the requirements, but not all of them.
 
 It should be also taken into account that Device Plugins API is
 beta. Introducing incompatible changes to it may not be accepted by
