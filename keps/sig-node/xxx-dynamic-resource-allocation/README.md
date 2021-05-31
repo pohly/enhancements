@@ -573,7 +573,7 @@ type ResourceClaimStatus struct {
 
    // An allocated resource is available on nodes that match this
    // selector. If nil, the resource is available everywhere.
-   Topology *corev1.NodeSelector
+   AvailableOnNodes *corev1.NodeSelector
 
    // Arbitrary data returned by the plugin after a successful allocation.
    // This data is passed to the plugin for all operations involving
