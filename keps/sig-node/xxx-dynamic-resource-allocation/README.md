@@ -162,7 +162,8 @@ resources for containers. Later, support for storage and discrete,
 countable per-node extended resources was added. The device plugin
 interface then made such local resources available to containers. But
 for many newer devices, this approach and the Kubernetes API for
-requesting these custom resources are too limited:
+requesting these custom resources are too limited. This KEP addresses
+the following limitations:
 
 - *Device initialization*: When starting a workload I’d like to have
   the device reconfigured or reprogrammed by the orchestration. For
@@ -215,6 +216,11 @@ requesting these custom resources are too limited:
   on the container image, and device plugins do not have access to the
   container image.
 
+Because this KEP enables the usage of
+[CDI](https://github.com/container-orchestrated-devices/container-device-interface/#readme)
+in Kubernetes, it also addresses those problems that are handled by
+CDI:
+
 - *Perform container runtime specific operations*: When deploying a container
   that needs access to a device, I would like to be able to reuse the
   same pod spec, irrespective of the underlying container runtime in
@@ -235,14 +241,6 @@ requesting these custom resources are too limited:
   supporting this because the device plugin is the sole dictator of
   which containers will have these operations performed on them.
 
-- *Device selection*: When deploying containers that perform health
-  checks, monitoring, or other “control plane” operations for a
-  device, I need a way to “see” all devices of a given type, but not
-  consume them
-
-  *Limitation*: Currently, there is no way to specify the equivalent
-  of a “vendor.com/device: all” selector with these semantics
-
 ### Goals
 
 <!--
@@ -253,7 +251,8 @@ know that this has succeeded?
 * More flexibility:
   * Arbitrary, resource-specific setup and cleanup actions
   * Over-the-fabric resources
-  * Custom matching of resource requests with available resources
+  * Custom matching of resource requests with available resources,
+    including handling of optional resource requests
 * User-friendly API for describing resource requests
 * Allow resource management plugins that can be developed and deployed
   separately from Kubernetes and are independent of specific container
@@ -313,7 +312,7 @@ support code will be made available to simplify the development of
 such a plugin, but using it will not be required and its API is not
 part of this KEP.
 
-Three new API object types get added:
+Three new API object types get added in a new API group:
 - ResourcePlugin, not namespaced, with a description of the plugin.
 - ResourceClass, not namespaced, with privileged parameters for
   multiple resource instances of a certain kind. All these instances
@@ -465,6 +464,55 @@ required) or even code snippets. If there's any ambiguity about HOW your
 proposal will be implemented, this is the place to discuss them.
 -->
 
+### Implementation
+
+![components](./components.svg)
+
+Several components must be implemented or modified in Kubernetes:
+- The new API must be added to kube-apiserver.
+- A new controller in kube-controller-manager which generates
+  ResourceClaims from Pod ResourceClaimTemplates, similar to
+  https://github.com/kubernetes/kubernetes/tree/master/pkg/controller/volume/ephemeral
+- A kube-scheduler plugin must detect Pods which reference a
+  ResourceClaim (directly or through a template) and ensure that the
+  resource is allocated before the Pod gets scheduled, similar to
+  https://github.com/kubernetes/kubernetes/blob/master/pkg/controller/volume/scheduling/scheduler_binder.go
+- Kubelet must be extended to retrieve information from ResourceClaims
+  and then invoke local resource plugin methods. It must pass information about
+  the additional resources to the container runtime. It must detect
+  whether the container runtime has the necessary support and
+  advertise that in the cluster via node labels to simplify deployment
+  of plugins and Pod scheduling.
+
+For a resource plugin the following components are needed:
+- Some utility library similar to
+  https://github.com/kubernetes-sigs/sig-storage-lib-external-provisioner
+  and the code in driver-registrar.
+- *Resource controller*: a central component which handles resource allocation
+  by watching and modifying ResourceClaims.
+- *Resource node plugin*: a component which cooperates with kubelet to prepare
+  the usage of the resource on a node.
+
+The utility library will be developed outside of Kubernetes and does not have
+to be used by plugins, therefore it is not described further in this KEP.
+
+
+```
+<<[UNRESOLVED @pohly]>>
+All of the changes in Kubernetes need to be specified in a lot more detail.
+
+A flow diagram showing the state transitions of a ResourceClaim needs to be added.
+
+Upgrade and downgrade scenarios should already be considered for v1alpha1 to ensure
+that whatever changes will be needed are in place before going to v1beta1 where
+downgrades have to be supported.
+
+All of that will be added once there is consensus to move ahead with this proposal.
+<<[/UNRESOLVED]>>
+```
+
+### API
+
 ResourceClaim, ResourceClass and ResourcePlugin are new built-in types
 in a new `cdi.k8s.io/v1alpha1` API group. This was chosen instead of
 using CRDs because core Kubernetes components must interact with them
@@ -553,7 +601,7 @@ type ResourceClaimStatus struct {
    // For immediate allocation, the scheduler will not set
    // this field. The plugin controller component may then
    // set it to trigger allocation on a specific node if the
-   // resources are local to nodes. 
+   // resources are local to nodes.
    SelectedNode string
 
    // When allocation is delayed, and the scheduler needs to
@@ -587,6 +635,7 @@ type ResourceClaimStatus struct {
    // of users. Individual containers in a pod are not counted as users, only the Pod
    // is.
    UserLimit int
+
    // UsedBy indicates which entities are currently using the resource.
    // Usually those are Pods. Only Pods listed as users can be scheduled,
    // all others must wait. Updated by kube-scheduler as part of Pod scheduling
@@ -693,53 +742,18 @@ type ResourceClaimTemplate struct {
 }
 ```
 
+### Communication between kubelet and resource node plugin
 
-Several components must be implemented or modified:
-- A new controller in kube-controller-manager which generated
-  ResourceClaims from Pod ResourceClaimTemplates, similar to
-  https://github.com/kubernetes/kubernetes/tree/master/pkg/controller/volume/ephemeral
-- A kube-scheduler plugin must detect Pods which reference a
-  ResourceClaim (directly or through a template) and ensure that the
-  resource is allocated before the Pod gets scheduled, similar to
-  https://github.com/kubernetes/kubernetes/blob/master/pkg/controller/volume/scheduling/scheduler_binder.go
-- Some utility library similar to
-  https://github.com/kubernetes-sigs/sig-storage-lib-external-provisioner
-  and the code in driver-registrar: this will be developed outside of
-  Kubernetes and does not have to be used by plugins, therefore it is
-  not described further in this KEP.
-- Kubelet must be extended to retrieve information from ResourceClaims
-  and then invoke local plugin methods. It must pass information about
-  the additional resources to the container runtime. It must detect
-  whether the container runtime has the necessary support and
-  advertise that in the cluster via node labels to simplify deployment
-  of plugins and Pod scheduling.
-
-```
-<<[UNRESOLVED @pohly]>>
-All of the changes in Kubernetes need to be specified in a lot more detail.
-
-A flow diagram showing the state transitions of a ResourceClaim needs to be added.
-
-Upgrade and downgrade scenarios should already be considered for v1alpha1 to ensure
-that whatever changes will be needed are in place before going to v1beta1 where
-downgrades have to be supported.
-
-All of that will be added once there is consensus to move ahead with this proposal.
-<<[/UNRESOLVED]>>
-```
-
-The gRPC interface is inspired by
+This gRPC interface is provided by the resource node plugin and invoked by
+kubelet. It is inspired by
 [CSI](https://github.com/container-storage-interface/spec/blob/master/spec.md),
-with “volume” replaced by “resource” and volume specific parts
-removed.
+with “volume” replaced by “resource” and volume specific parts removed.
 
 ```
 <<[UNRESOLVED @pohly]>>
 Do plugin operations need secrets? They are currently not part of the proposed Kubernetes API.
 <<[/UNRESOLVED]>>
 ```
-
-### Node Service RPC
 
 #### `NodePrepareResource`
 
@@ -1362,6 +1376,20 @@ would help address some of the requirements, but not all of them.
 It should be also taken into account that Device Plugins API is
 beta. Introducing incompatible changes to it may not be accepted by
 the Kubernetes community.
+
+### Webhooks instead of ResourceClaim updates
+
+In the current design, scheduler and the resource controller communicate by
+updating fields in a ResourceClaim. This has several advantages compared to an
+approach were kube-scheduler retrieves information from the resource controller
+via HTTP:
+* No need for a new webhook API.
+* Simpler deployment of resource controller because all it needs are
+  credentials to communicate with the apiserver.
+* Current status can be checked by querying the ResourceClaim.
+
+The downside is higher load on the apiserver and an increase of the size of
+ResourceClaim objects.
 
 ## Infrastructure Needed (Optional)
 
