@@ -797,11 +797,19 @@ message NodePrepareResourceRequest {
 }
 
 message NodePrepareResourceResponse {
-  // The map <device name>:<kind> for all allocated devices
- // where device name is a “name of the device” and kind is a
- // “kind of the device usually of the form vendor.com/device”
- // according to the CDI schema
- map<string, string> devices = 1;
+  // These are the additional devices that kubelet must
+  // make available via the container runtime. A resource
+  // may have zero or more devices.
+  repeated CDIDevice devices = 1;
+}
+
+message CDIDevice {
+  // Kind is the string that together with the name identifies a device
+  // (https://github.com/container-orchestrated-devices/container-device-interface/blob/master/SPEC.md#kind).
+  string kind = 1;
+  // Name is the name that within its kind uniquely identifies a
+  // device (https://github.com/container-orchestrated-devices/container-device-interface/blob/master/SPEC.md#cdi-devices).
+  string name = 2;
 }
 ```
 
