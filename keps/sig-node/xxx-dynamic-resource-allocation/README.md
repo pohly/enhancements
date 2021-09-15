@@ -412,8 +412,15 @@ spec:
   - name: my-ubuntu
     image: ubuntu
     command: ["/bin/program"]
-    resources:
+    podResources:
     - name: gpu_2Gb
+    resources:
+      requests:
+        memory: "64Mi"
+        cpu: "250m"
+      limits:
+        memory: "128Mi"
+        cpu: "500m"
   resources:
   - name: gpu_2Gb
     template:
@@ -706,7 +713,7 @@ type Container {
    ...
    // The entries are the names of resources in PodSpec.Resources
    // that are used by the container.
-   PodResourceNames []string
+   PodResources []string
    ...
 }
 
