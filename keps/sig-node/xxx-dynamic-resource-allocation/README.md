@@ -129,16 +129,29 @@ updates.
 [documentation style guide]: https://github.com/kubernetes/community/blob/master/contributors/guide/style-guide.md
 -->
 
-Dynamic resource allocation introduces a new API for requesting
-arbitrary resources with parameters that can be different depending on
-what kind of resource gets requested. Resource allocations can be
-ephemeral (specified in a Pod spec, allocated and destroyed together
-with the Pod) and persistent (lifecycle managed separately from a Pod
-and used for multiple different Pods).
+Dynamic resource allocation introduces an alternative to the existing [device
+manager
+API](https://github.com/kubernetes/community/blob/master/contributors/design-proposals/resource-management/device-plugin.md)
+for third-party hardware vendors. Both are expected to co-exist, with vendors
+choosing the API that better suits their needs on a case-by-case basis. Because
+the new API is going to be implemented independently of the existing device
+manager, there's little risk of breaking stable APIs.
+
+The new API is inspired by the volume provisioning API and uses similar
+concepts. The goal is to let users request resources with parameters that can
+be different depending on what kind of resource gets requested. Resource
+allocations can be ephemeral (specified in a Pod spec, allocated and destroyed
+together with the Pod) and persistent (lifecycle managed separately from a Pod,
+with an allocated resource used for multiple different Pods).
 
 Resources are managed by plugins that communicate with central
 Kubernetes components, in particular the kube-scheduler, by updating
-objects stored in the kube-apiserver. Communication with kubelet is
+objects stored in the kube-apiserver. kube-scheduler only needs to be modified
+once to support dynamic resource allocation. Then multiple plugins from
+different vendors can be installed at the same time without making further
+changes to the scheduler.
+
+Communication with kubelet is
 handled through local Unix domain sockets and the plugin registration
 mechanism, using a new plugin type and a new gRPC interface. Towards
 the container runtime, kubelet and those plugins then must use the
@@ -399,8 +412,15 @@ spec:
   - name: my-ubuntu
     image: ubuntu
     command: ["/bin/program"]
-    resources:
+    podResources:
     - name: gpu_2Gb
+    resources:
+      requests:
+        memory: "64Mi"
+        cpu: "250m"
+      limits:
+        memory: "128Mi"
+        cpu: "500m"
   resources:
   - name: gpu_2Gb
     template:
@@ -693,7 +713,7 @@ type Container {
    ...
    // The entries are the names of resources in PodSpec.Resources
    // that are used by the container.
-   PodResourceNames []string
+   PodResources []string
    ...
 }
 
