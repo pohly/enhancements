@@ -137,24 +137,31 @@ choosing the API that better suits their needs on a case-by-case basis. Because
 the new API is going to be implemented independently of the existing device
 manager, there's little risk of breaking stable APIs.
 
-The new API is inspired by the volume provisioning API and uses similar
+The new API is inspired by the existing [volume provisioning support with CSI](https://github.com/kubernetes/community/blob/master/contributors/design-proposals/storage/container-storage-interface.md#provisioning-and-deleting) and uses similar
 concepts. The goal is to let users request resources with parameters that can
 be different depending on what kind of resource gets requested. Resource
 allocations can be ephemeral (specified in a Pod spec, allocated and destroyed
 together with the Pod) and persistent (lifecycle managed separately from a Pod,
 with an allocated resource used for multiple different Pods).
 
-Resources are managed by plugins that communicate with central
+Several core Kubernetes components must be modified (see the
+[implementation](#implementation) section for details):
+- kube-apiserver (new API)
+- kube-controller-manager (new controller)
+- kube-scheduler (new builtin plugin)
+- kubelet (new third-party plugin kind)
+
+Resources are managed by third-party plugins that communicate with central
 Kubernetes components, in particular the kube-scheduler, by updating
 objects stored in the kube-apiserver. kube-scheduler only needs to be modified
 once to support dynamic resource allocation. Then multiple plugins from
 different vendors can be installed at the same time without making further
 changes to the scheduler.
 
-Communication with kubelet is
+Communication between the kubelet and the local part of the plugin is
 handled through local Unix domain sockets and the plugin registration
-mechanism, using a new plugin type and a new gRPC interface. Towards
-the container runtime, kubelet and those plugins then must use the
+mechanism, using a new plugin type and a new gRPC interface.
+The container runtime uses the
 [Container Device Interface
 (CDI)](https://github.com/container-orchestrated-devices/container-device-interface)
 to expose the resources.
@@ -175,11 +182,11 @@ resources for containers. Later, support for storage and discrete,
 countable per-node extended resources was added. The device plugin
 interface then made such local resources available to containers. But
 for many newer devices, this approach and the Kubernetes API for
-requesting these custom resources are too limited. This KEP addresses
-the following limitations:
+requesting these custom resources is too limited. This KEP addresses
+limitations of the current approach for the following use cases:
 
 - *Device initialization*: When starting a workload I’d like to have
-  the device reconfigured or reprogrammed by the orchestration. For
+  the device reconfigured or reprogrammed during orchestration. For
   security reasons workloads should not be able to reconfigure devices
   directly.
 
@@ -199,14 +206,14 @@ the following limitations:
   device.
 
   *Limitation*: Current implementation of the device plugin doesn’t
-  allow to allocate part of the device because parameters are too limited
+  allow one to allocate part of the device because parameters are too limited
   and Kubernetes doesn't have enough information about the extended
   resources on a node to decide whether they can be shared.
 
-- *Optional allocation*: When deploying workload I’d like to specify
-  soft(optional) device requirements. If the device exists and it’s
-  allocatable it would be allocated. If not - workload will be run on
-  the node without a device. GPU and crypto-offload engines are
+- *Optional allocation*: When deploying a workload I’d like to specify
+  soft(optional) device requirements. If a device exists and it’s
+  allocatable it will be allocated. If not - the workload will be run on
+  a node without a device. GPU and crypto-offload engines are
   examples of this kind of device. If they’re not available, workloads
   can still run by falling back to using only the CPU for the same
   task.
@@ -278,7 +285,7 @@ What is out of scope for this KEP? Listing non-goals helps to focus discussion
 and make progress.
 -->
 
-* An extension of the model that kube-scheduler has about
+* Extend the model that kube-scheduler has about
   resources. Instead, it will need information from the plugin for
   each resource request to determine where a Pod using the resource
   might run. The [Representing Compute Resources in Kubernetes
@@ -286,13 +293,15 @@ and make progress.
   had some ideas what information the scheduler might need (“supports
   overcommit”, “fractional”), but ultimately any choice regarding that
   will only work for certain kinds of resources.
-* A standardized way of describing available resources. Only allocated
+
+* Standardize how to describe available resources. Only allocated
   resources are visible through the APIs defined below. How to
   describe available resources is plugin specific because it depends
   on the kind of resource which attributes might be relevant. Plugins
   should use and document their individual approach for this (for
   example, defining a CRD and publishing through that).
-* An abstraction layer for resource requests, i.e., something like a
+
+* Provide an abstraction layer for resource requests, i.e., something like a
   “I want some kind of GPU”. Users will need to know about specific
   resource plugins and which parameters they support. Portability of
   workloads could be added on top of this proposal by introducing the
