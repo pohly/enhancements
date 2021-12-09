@@ -23,7 +23,7 @@ link Pod to scheduler--><path d="M157.386,293.065 C165.345,311.7755 176.993,339.
 link ResourceClaim to k8sresourceplugin--><path d="M334.17,293.32 C327.687,318.14 317.278,357.992 310.805,382.774 " fill="none" id="ResourceClaim-k8sresourceplugin" style="stroke:#A80036;stroke-width:1.0;"/><polygon fill="#A80036" points="309.487,387.822,315.6323,380.1256,310.751,382.9844,307.8922,378.1031,309.487,387.822" style="stroke:#A80036;stroke-width:1.0;"/><polygon fill="#A80036" points="335.496,288.244,329.3507,295.9404,334.232,293.0816,337.0908,297.9629,335.496,288.244" style="stroke:#A80036;stroke-width:1.0;"/><!--MD5=[fa1108eaf13ac1d69ce7162fdfba6bf5]
 link ResourceClaim to vendorcontroller--><path d="M408.508,270 C503.744,270 598.98,270 694.217,270 " fill="none" id="ResourceClaim-vendorcontroller" style="stroke:#A80036;stroke-width:1.0;"/><polygon fill="#A80036" points="699.329,270,690.329,266,694.329,270,690.329,274,699.329,270" style="stroke:#A80036;stroke-width:1.0;"/><polygon fill="#A80036" points="403.305,270,412.305,274,408.305,270,412.305,266,403.305,270" style="stroke:#A80036;stroke-width:1.0;"/><!--MD5=[8b43d783065e745b3c78ced736782ecd]
 link pluginmanager to vendornodeplugin--><path d="M402.089,123.518 C416.891,131.404 434.843,139.843 452,145 C588.418,186.002 628.278,170.644 770,185 C793.061,187.336 852.276,184.916 874,193 C906.218,204.988 937.107,230.238 956.511,248.345 " fill="none" id="pluginmanager-vendornodeplugin" style="stroke:#A80036;stroke-width:1.0;"/><polygon fill="#A80036" points="960.235,251.865,956.4446,242.7748,956.6023,248.4294,950.9476,248.5871,960.235,251.865" style="stroke:#A80036;stroke-width:1.0;"/><polygon fill="#A80036" points="397.601,121.093,403.6199,128.8887,402.0006,123.4685,407.4208,121.8492,397.601,121.093" style="stroke:#A80036;stroke-width:1.0;"/><!--MD5=[d3fe6cacefaea3b19b9bbf67da9ae812]
-link resourcemanager to vendornodeplugin--><path d="M623.858,116.903 C692.58,129.996 793.137,153.983 874,193 C904.21,207.577 934.602,231.384 954.46,248.47 " fill="none" id="resourcemanager-vendornodeplugin" style="stroke:#A80036;stroke-width:1.0;"/><polygon fill="#A80036" points="958.287,251.793,954.114,242.8719,954.5117,248.5148,948.8688,248.9124,958.287,251.793" style="stroke:#A80036;stroke-width:1.0;"/><polygon fill="#A80036" points="618.553,115.902,626.6551,121.5016,623.4663,116.8292,628.1387,113.6404,618.553,115.902" style="stroke:#A80036;stroke-width:1.0;"/><!--MD5=[c2e5448e387249491e47aa4b83400976]
+link resourcemanager to vendornodeplugin--><path d="M623.858,116.903 C692.58,129.996 793.137,153.983 874,193 C904.21,207.577 934.602,231.384 954.46,248.47 " fill="none" id="resourcemanager-vendornodeplugin" style="stroke:#A80036;stroke-width:1.0;"/><polygon fill="#A80036" points="958.287,251.793,954.114,242.8719,954.5117,248.5148,948.8688,248.9124,958.287,251.793" style="stroke:#A80036;stroke-width:1.0;"/><polygon fill="#A80036" points="618.553,115.902,626.6551,121.5016,623.4663,116.8292,628.1387,113.6404,618.553,115.902" style="stroke:#A80036;stroke-width:1.0;"/><!--MD5=[159e2ce30715c2f47f7f247b589abee0]
 @startuml
 skinparam componentStyle rectangle
 
@@ -65,7 +65,7 @@ pluginmanager <-> vendornodeplugin
 resourcemanager <-> vendornodeplugin
 @enduml
 
-PlantUML version 1.2021.10beta3(Unknown compile time)
+PlantUML version 1.2021.16beta3(Unknown compile time)
 (GPL source distribution)
 Java Runtime: Java(TM) SE Runtime Environment
 JVM: Java HotSpot(TM) 64-Bit Server VM
