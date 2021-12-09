@@ -1,5 +1,6 @@
 @startuml
-!theme lightgray
+!theme reddress-lightblue
+
 (*) -->[ **user** creates Pod with inline ResourceClaimTemplate ] "Pod exists"
 -->[ **resource controller** checks ResourceClaimTemplate and ResourceClass,\l then creates ResourceClaim with Pod as owner ] ==B1==
 
