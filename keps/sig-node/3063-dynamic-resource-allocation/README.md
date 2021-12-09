@@ -535,7 +535,7 @@ proposal will be implemented, this is the place to discuss them.
 
 ### Implementation
 
-![components](./components.svg)
+![components](./components.png)
 
 Several components must be implemented or modified in Kubernetes:
 - The new API must be added to kube-apiserver.
@@ -589,7 +589,7 @@ then must be retried until they succeed or something else changes in the
 system, like for example deleting objects. These additional state transitions
 are not shown for the sake of simplicity.
 
-![allocation](./allocation.svg)
+![allocation](./allocation.png)
 
 The flow is similar for a ResourceClaim that gets created as a stand-alone
 object by the user. In that case, the Pod reference that ResourceClaim by
