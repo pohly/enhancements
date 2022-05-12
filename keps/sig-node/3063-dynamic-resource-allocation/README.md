@@ -182,49 +182,36 @@ updates.
 [documentation style guide]: https://github.com/kubernetes/community/blob/master/contributors/guide/style-guide.md
 -->
 
-Dynamic resource allocation introduces an alternative to the existing [device
-manager
-API](https://github.com/kubernetes/community/blob/master/contributors/design-proposals/resource-management/device-plugin.md)
-for third-party hardware vendors. Both are expected to co-exist, with vendors
-choosing the API that better suits their needs on a case-by-case basis. Because
-the new API is going to be implemented independently of the existing device
-manager, there's little risk of breaking stable APIs.
+Users are increasingly deploying Kubernetes as management solution for new
+workloads (batch processing) and in new environments (edge computing). Such
+workloads no longer need just RAM and CPU, but also access to specialized
+hardware. With upcoming enhancements of data center interconnects, accelerators
+no longer need to be physically plugged into the nodes where they are
+used. Instead, accelerators can be added to nodes dynamically as needed.
 
-The new API is inspired by the existing [volume provisioning support with CSI](https://github.com/kubernetes/community/blob/master/contributors/design-proposals/storage/container-storage-interface.md#provisioning-and-deleting) and uses similar
-concepts. The goal is to let users request resources with parameters that can
-be different depending on what kind of resource gets requested. Resource
-allocations can be ephemeral (specified in a Pod spec, allocated and destroyed
-together with the Pod) and persistent (lifecycle managed separately from a Pod,
-with an allocated resource used for multiple different Pods).
+This KEP introduces a new API for describing which of these new resource kinds
+a pod needs. The API supports:
 
-Several core Kubernetes components must be modified (see the
-[implementation](#implementation) section for details):
-- kube-apiserver (new API)
-- kube-controller-manager (new controller)
-- kube-scheduler (new builtin scheduler plugin)
-- kubelet (new third-party kubelet plugin type)
+- Network-attached resources. The existing [device manager API](https://github.com/kubernetes/community/blob/master/contributors/design-proposals/resource-management/device-plugin.md)
+  is limited to hardware on a node.
+- Sharing of a resource allocation between multiple containers or pods.
+  The device manager API currently cannot share resources at all. It
+  could be extended to share resources between containers in a single pod,
+  but supporting sharing between pods would need a completely new
+  API similar to the one in this KEP.
+- Using a resource that is expensive to initialize multiple times
+  in different pods. This is not possible at the moment.
+- Custom parameters that describe resource requirements and initialization.
+  With the current Kubernetes API, only pod annotations can be used
+  as replacement for such parameters, which is not user-friendly.
 
-Resources as described by this KEP are managed by third-party resource drivers that communicate with central
-Kubernetes components, in particular the kube-scheduler, by updating
-objects stored in the kube-apiserver. kube-scheduler only needs to be modified
-once to support dynamic resource allocation. Then multiple drivers from
-different vendors can be installed at the same time without making further
-changes to the scheduler.
+Support for new hardware will be provided by hardware vendor add-ons. It will
+not be necessary anymore to modify Kubernetes itself.
 
-The scope of this KEP is smaller compared to two previous proposals (linked to
-below under non-goals) and therefore it is easier to implement:
-- kube-scheduler doesn't need to know about different kinds of resources
-  and therefore we don't need to define those in advance and later
-  update those definitions as new hardware appears.
-- There is no need to define standardized parameters for resources.
-
-Communication between the kubelet and the node part of the driver is
-handled through local Unix domain sockets and the kubelet plugin registration
-mechanism, using a new plugin type and a new gRPC interface.
-The container runtime uses the
-[Container Device Interface
-(CDI)](https://github.com/container-orchestrated-devices/container-device-interface)
-to expose the resources.
+This KEP does not replace other means of requesting traditional resources
+(RAM/CPU, volumes, extended resources). The scheduler will serve as coordinator
+between the add-ons which own resources (CSI driver, resource driver) and the
+resources owned and assigned by the scheduler (RAM/CPU, extended resources).
 
 ## Motivation
 
@@ -320,6 +307,11 @@ What is out of scope for this KEP? Listing non-goals helps to focus discussion
 and make progress.
 -->
 
+* Replace the device manager API. Both are expected to co-exist, with vendors
+  choosing the API that better suits their needs on a case-by-case
+  basis. Because the new API is going to be implemented independently of the
+  existing device manager, there's little risk of breaking stable APIs.
+
 * Extend the model that kube-scheduler has about
   resources. Instead, it will need information from the resource driver for
   each resource request to determine where a Pod using the resource
@@ -345,6 +337,8 @@ and make progress.
   [Resource Class
   Proposal](https://docs.google.com/document/d/1qKiIVs9AMh2Ua5thhtvWqOqW0MSle_RV3lfriO1Aj6U/edit#heading=h.jzfmfdca34kj)
   included such an approach.
+
+
 
 ## Proposal
 
@@ -394,13 +388,6 @@ A third one with information about the driver ("ResourceDriver", similar to the
 "CSIDriver" from storage) could get added in the future. At the moment it is
 not needed yet.
 
-To support arbitrarily complex parameters, both ResourceClass and
-ResourceClaim contain one field which holds a
-[runtime.RawExtension](https://pkg.go.dev/k8s.io/apimachinery/pkg/runtime#RawExtension) (see [user stories](#user-stories) for examples).
-Validation can be handled by drivers through an
-admission controller (if desired) or later at runtime when the
-parameters are passed to the driver. 
-
 The ResourceClaim spec is immutable. The ResourceClaim
 status is reserved for system usage and holds the current state of the
 resource. The status must not get lost, which in the past was not ruled
@@ -409,6 +396,25 @@ with lower reliability. To recover after a loss, status was meant to be recovera
 A [recent KEP](https://github.com/kubernetes/enhancements/tree/master/keps/sig-architecture/2527-clarify-status-observations-vs-rbac)
 clarified that status will always be stored reliably and can be used as
 proposed in this KEP.
+
+To support arbitrarily complex parameters, both ResourceClass and
+ResourceClaim contain one field which holds a
+[runtime.RawExtension](https://pkg.go.dev/k8s.io/apimachinery/pkg/runtime#RawExtension) (see [user stories](#user-stories) for examples).
+Validation can be handled by drivers through an
+admission controller (if desired) or later at runtime when the
+parameters are passed to the driver.
+
+The reasons for choosing embedded RawExtension fields fields instead of
+references to a custom resource (CR) that is defined by a driver's custom
+resource definition (CRD) are:
+
+- Immutability can be enforced: a separate object could always get
+  deleted and recreated with new content.
+- More user-friendly because there is no need to manage an additional
+  object.
+- Less risky resource driver deployment and updates: CRs get deleted when
+  removing their CRD, which would render existing workloads unusable until
+  users redeploy them.
 
 Kube-scheduler
 and resource driver communicate by modifying that status. The status is also
@@ -440,11 +446,13 @@ one node and the Pod cannot run there because other resources like RAM or CPU
 are exhausted on that node, then the Pod cannot run elsewhere. The same applies
 to resources that are available on a certain subset of the nodes and those
 nodes are busy.
-Delayed allocation solves this by integrating allocation with Pod scheduling.
 
-Allocation must be complete before a Pod is allowed to be scheduled onto a
-node. This avoids scenarios where a Pod is permanently assigned to a node which
-can't fit the pod because of the pod's other resource requirements.
+Delayed allocation solves this by integrating allocation with Pod scheduling:
+an attempt to schedule a Pod triggers allocation of pending resources for nodes
+that the scheduler has deemed suitable. Scheduling the pod is then put on hold
+until all resources are allocated. This avoids scenarios where a Pod is
+permanently assigned to a node which can't fit the pod because of the pod's
+other resource requirements.
 
 When a PodTemplateSpec in an app controller spec references a ResourceClaim by
 name, all Pods created by that controller also use that name and thus share the
@@ -673,13 +681,15 @@ ResourceClaim doesn't get deleted.
 
 ### API
 
-ResourceClaim  and ResourceClass are new built-in types
-in a new `cdi.k8s.io/v1alpha1` API group. This was chosen instead of
-using CRDs because core Kubernetes components must interact with them
-and installation of CRDs as part of cluster creation is an unsolved
-problem.
+ResourceClaim and ResourceClass are new built-in types in a new
+`cdi.k8s.io/v1alpha1` API group. This was chosen instead of using CRDs because
+core Kubernetes components must interact with them and installation of CRDs as
+part of cluster creation is an unsolved problem.
 
-The PodSpec gets extended.
+The PodSpec gets extended. Types and structs referenced from PodSpec
+(ResourceClaimTemplate, ResourceClaimSpec) must be placed in `core.k8s.io/v1`
+to avoid a cyclic dependency because `cdi.k8s.io/v1alpha1` depends on
+NodeSelector from the core API.
 
 Secrets are not part of this API: if a resource driver needs secrets, for
 example to access its own backplane, then it can define custom parameters for
@@ -687,217 +697,261 @@ those secrets and retrieve them directly from the apiserver. This works because
 drivers are expected to be written for Kubernetes.
 
 ```
+// ResourceClass is used by administrators to influence how resources
+// are allocated.
 type ResourceClass struct {
-    // Resource drivers have a unique name in reverse domain order (acme.example.com).
-    DriverName string
-    // Parameters holds arbitrary values that will be available to the driver
-    // when allocating a resource that uses this class. The driver will
-    // be able to distinguish between parameters stored here and
-    // and those stored in ResourceClaimSpec. These parameters
-    // here can only be set by cluster administrators.
-    Parameters runtime.RawExtension
+	metav1.TypeMeta
+	// More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata
+	metav1.ObjectMeta
+
+	// DriverName determines which resource driver is to be used for
+	// allocation of a ResourceClaim that uses this class.
+	//
+	// Resource drivers have a unique name in reverse domain order
+	// (acme.example.com).
+	DriverName string
+
+	// Parameters holds arbitrary values that will be available to the
+	// driver when allocating a resource that uses this class. The driver
+	// will be able to distinguish between parameters stored here and and
+	// those stored in ResourceClaimSpec. These parameters here can only be
+	// set by cluster administrators.
+	Parameters runtime.RawExtension
 }
 
+// ResourceClaim is created by users to describe which resources they need.
+// Its status tracks whether the resource has been allocated and what the
+// resulting attributes are.
 type ResourceClaim struct {
-    // The driver must set a finalizer here before it attempts to
-    // allocate the resource. It removes the finalizer again when
-    // a) the allocation attempt has definitely failed or b) when
-    // the allocated resource was freed. This ensures that
-    // resources are not leaked.
-    ObjectMeta
-    // Spec describes the desired attributes of a resource that then
-    // needs to be allocated. It can only be set once when creating
-    // the ResourceClaim.
-    Spec ResourceClaimSpec
-    // Status describes whether the resource is available and with
-    // which attributes.
-    Status ResourceClaimStatus
+	metav1.TypeMeta
+
+	// The driver must set a finalizer here before it attempts to allocate
+	// the resource. It removes the finalizer again when a) the allocation
+	// attempt has definitely failed or b) when the allocated resource was
+	// freed. This ensures that resources are not leaked.
+	//
+	// More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata
+	metav1.ObjectMeta
+
+	// Spec describes the desired attributes of a resource that then needs
+	// to be allocated. It can only be set once when creating the
+	// ResourceClaim.
+	Spec core.ResourceClaimSpec
+
+	// Status describes whether the resource is available and with which
+	// attributes.
+	Status ResourceClaimStatus
 }
 
+// ResourceClaimSpec defines how a resource is to be allocated.
 type ResourceClaimSpec struct {
-    // ResourceClassName references the driver and additional
-    // parameters via the name of a ResourceClass that was
-    // created as part of the driver deployment.
-    //
-    // The apiserver does not check that the referenced class
-    // exists, but a driver-specific admission webhook
-    // may require that and is allowed to reject claims where
-    // the class is missing.
-    ResourceClassName string
+	// ResourceClassName references the driver and additional parameters
+	// via the name of a ResourceClass that was created as part of the
+	// driver deployment.
+	//
+	// The apiserver does not check that the referenced class exists, but a
+	// driver-specific admission webhook may require that and is allowed to
+	// reject claims where the class is missing.
+	ResourceClassName string
 
-    // Parameters holds arbitrary values that will be available to the driver
-    // when allocating a resource for the claim.
-    Parameters runtime.RawExtension
+	// Parameters holds arbitrary values that will be available to the
+	// driver when allocating a resource for the claim.
+	Parameters runtime.RawExtension
 
-    // Allocation can start immediately or when a Pod wants to use
-    // the resource. Waiting for a Pod is the default.
-    AllocationMode AllocationMode
+	// Allocation can start immediately or when a Pod wants to use the
+	// resource. Waiting for a Pod is the default.
+	AllocationMode AllocationMode
 }
 
-// AllocationMode describes whether a ResourceClaim gets allocated
-// immediately when it gets created (AllocationModeImmediate)
-// or whether allocation is delayed until it is needed for
-// a Pod (AllocationModeDelayed). Other modes might get
-// added in the future.
+// AllocationMode describes whether a ResourceClaim gets allocated immediately
+// when it gets created (AllocationModeImmediate) or whether allocation is
+// delayed until it is needed for a Pod (AllocationModeDelayed). Other modes
+// might get added in the future.
 type AllocationMode string
 
 const (
-     // When a ResourceClass has AllocationModeImmediate,
-     // allocation of ResourceClaims with that ResourceClass
-     // starts as soon as the ResourceClaim gets created.
-     // This is done without considering the needs of
-     // Pods that will use the ResourceClaim because those
-     // Pods are not known yet.
-     AllocationModeImmediate AllocationMode = “Immediate”
+	// When a ResourceClaim has AllocationModeDelayed, allocation is
+	// delayed until a Pod gets scheduled that needs the ResourceClaim. The
+	// scheduler will consider all resource requirements of that Pod and
+	// trigger allocation for a node that fits the Pod.
+	AllocationModeDelayed AllocationMode = "Delayed"
 
-     // When a ResourceClass has AllocationModeDelayed,
-     // allocation of ResourceClaims with that ResourceClass
-     // is delayed until a Pod gets scheduled that needs the
-     // ResourceClaim. The scheduler will consider all
-     // resource requirements of that Pod and trigger
-     // allocation for a node that fits the Pod.
-     AllocationModeDelayed AllocationMode = “Delayed”
-}
+	// When a ResourceClaim has AllocationModeImmediate, allocation starts
+	// as soon as the ResourceClaim gets created. This is done without
+	// considering the needs of Pods that will use the ResourceClaim
+	// because those Pods are not known yet.
+	AllocationModeImmediate AllocationMode = "Immediate"
+)
 
+// ResourceClaimStatus tracks whether the resource has been allocated and what
+// the resulting attributes are.
 type ResourceClaimStatus struct {
-   // Explains what the current status of the claim is and
-   // determines which component needs to do something.
-   Phase ResourceClaimPhase
+	// Phase explains what the current status of the claim is
+	// and determines which component needs to do something.
+	Phase ResourceClaimPhase
 
-   // A copy of the driver name from the ResourceClass at
-   // the time when allocation started. Drivers can
-   // filter claims by this field. It's also necessary to
-   // support deallocation when the class gets deleted before
-   // a claim.
-   DriverName string
+	// DriverName is a copy of the driver name from the ResourceClass at
+	// the time when allocation started. It's necessary to support
+	// deallocation when the class gets deleted before a claim.
+	DriverName string
 
-   // Scheduling contains information that is only relevant
-   // while the scheduler and the resource driver are in
-   // the process of selecting a node for a Pod and the
-   // allocation mode is AllocationModeDelayed. The
-   // resource driver should unset this when it has successfully
-   // allocated the resource.
-   Scheduling *SchedulingStatus
+	// Scheduling contains information that is only relevant while the
+	// scheduler and the resource driver are in the process of selecting a
+	// node for a Pod and the allocation mode is AllocationModeDelayed. The
+	// resource driver should unset this when it has successfully allocated
+	// the resource.
+	Scheduling SchedulingStatus
 
-   // Arbitrary data returned by the driver after a successful allocation.
-   // This data is passed to the driver for all operations involving
-   // the allocated resource. This is opaque for Kubernetes.
-   // Driver documentation may explain to users how to interpret
-   // this data if needed.
-   //
-   // The attributes must be sufficient to deallocate the resource
-   // because the ResourceClass might not be available anymore
-   // when deallocation starts.
-   Attributes map[string]string
+	// Allocation is set by the resource driver once a resource has been
+	// allocated succesfully.
+	Allocation AllocationResult
 
-    // UsersLimit determines how many entities are allowed to use this resource
-    // at the same time. The default is 1. -1 enables the usage by an unlimited number
-   // of users. Individual containers in a pod are not counted as users, only the Pod
-   // is.
-   UserLimit int
+	// ReservedFor indicates which entities are currently allowed to use
+	// the resource.  Usually those are Pods, but any other object that
+	// currently exists is also possible.
+	//
+	// A scheduler must add a Pod that it is scheduling. This must be done
+	// in an atomic ResourceClaim update because there might be multiple
+	// schedulers working on different Pods that compete for access to the
+	// same ResourceClaim.
+	//
+	// kubelet will check this before allowing a Pod to run because a
+	// scheduler might have missed that step, for example because it
+	// doesn't support dynamic resource allocation or the feature was
+	// disabled.
+	ReservedFor []metav1.OwnerReference
 
-   // ReservedFor indicates which entities are currently allowed to use the resource.
-   // Usually those are Pods, but other users are also possible.
-   //
-   // A scheduler must add a Pod that it is scheduling. This must be done in an
-   // atomic ResourceClaim update because there might be multiple schedulers working
-   // on different Pods that compete for access to the same ResourceClaim.
-   //
-   // kubelet will check this before allowing a Pod to run because a scheduler might
-   // have missed that step, for example because it doesn't support dynamic resource
-   // allocation or the feature was disabled.
-   ReservedFor []metav1.OwnerReference
+	// UsedOnNodes is a list of nodes where the ResourceClaim is or is
+	// going to be used. This must be set by the scheduler after scheduling
+	// a Pod onto a node.
+	//
+	// List/watch requests for ResourceClaims can filter on this field
+	// using a "status.usedOnNodes.<entry>=1" fieldSelector. kubelet uses
+	// this to limit which ResourceClaims it receives from the apiserver.
+	UsedOnNodes []string
 }
 
+// ResourceClaimPhase determines whether a ResourceClaim is currently pending
+// (ResourceClaimPending), allocated (ResourceClaimAllocated) or needs to be
+// reallocated (ResourceClaimReallocate). Other phases may get added in the
+// future.
 type ResourceClaimPhase string
 
 const (
-    // The claim is waiting for allocation by the driver.
-    //
-    // For delayed allocation, the driver will wait for
-    // a selected node before it starts an allocation attempt.
-    ResourceClaimPending ResourceClaimPhase = “Pending”
+	// The claim is waiting for allocation by the driver.
+	//
+	// For delayed allocation, the driver will wait for a selected node
+	// before it starts an allocation attempt.
+	ResourceClaimPending ResourceClaimPhase = "Pending"
 
-    // Set by the driver once the resource has been successfully
-    // allocated. The scheduler waits for all resources used by
-    // a Pod to be in this phase.
-    ResourceClaimAllocated ResourceClaimPhase = “Allocated”
+	// Set by the driver once the resource has been successfully
+	// allocated. The scheduler waits for all resources used by
+	// a Pod to be in this phase.
+	ResourceClaimAllocated ResourceClaimPhase = "Allocated"
 
-    // It can happen that a resource got allocated for a Pod and
-    // then the Pod cannot be scheduled onto the nodes where the allocated
-    // resource is available. The scheduler detects this and
-    // then sets the “reallocate” phase to tell the driver that it must
-    // free the resource. The driver does that and resets
-    // the ResourceClaimPhase back to "Pending".
-    ResourceClaimReallocate ResourceClaimPhase = “Reallocate”
+	// It can happen that a resource got allocated for a Pod and then the
+	// Pod cannot be scheduled onto the nodes where the allocated resource
+	// is available. The scheduler detects this and then sets the
+	// “reallocate” phase to tell the driver that it must free the
+	// resource. The driver does that and resets the ResourceClaimPhase
+	// back to "Pending".
+	ResourceClaimReallocate ResourceClaimPhase = "Reallocate"
 )
 
+// SchedulingStatus is used while handling delayed allocation.
 type SchedulingStatus struct {
-    // Scheduler contains information provided by the scheduler.
-    Scheduler SchedulerSchedulingStatus
+	// Scheduler contains information provided by the scheduler.
+	Scheduler SchedulerSchedulingStatus
 
-    // DriverStatus contains information provided by the resource
-    // driver.
-    Driver DriverSchedulingStatus
+	// DriverStatus contains information provided by the resource driver.
+	Driver DriverSchedulingStatus
 }
 
+// SchedulerSchedulingStatus contains information provided by the scheduler
+// while handling delayed allocation.
 type SchedulerSchedulingStatus struct {
-   // When allocation is delayed, the scheduler must set
-   // the node for which it wants the resource to be allocated
-   // before the driver proceeds with allocation.
-   //
-   // For immediate allocation, the scheduler will not set
-   // this field. The resource driver controller may
-   // set it to trigger allocation on a specific node if the
-   // resources are local to nodes.
-   SelectedNode string
+	// When allocation is delayed, the scheduler must set
+	// the node for which it wants the resource to be allocated
+	// before the driver proceeds with allocation.
+	//
+	// For immediate allocation, the scheduler will not set
+	// this field. The resource driver controller may
+	// set it to trigger allocation on a specific node if the
+	// resources are local to nodes.
+	//
+	// List/watch requests for ResourceClaims can filter on this field
+	// using a "status.scheduling.scheduler.selectedNode=NAME"
+	// fieldSelector.
+	SelectedNode string
 
-   // When allocation is delayed, and the scheduler needs to
-   // decide on which node a Pod should run, it will
-   // ask the driver on which nodes the resource might be
-   // made available. To trigger that check, the scheduler
-   // provides the names of nodes which might be suitable
-   // for the Pod. Will be updated periodically until
-   // the claim is allocated.
-   PotentialNodes []string
+	// When allocation is delayed, and the scheduler needs to
+	// decide on which node a Pod should run, it will
+	// ask the driver on which nodes the resource might be
+	// made available. To trigger that check, the scheduler
+	// provides the names of nodes which might be suitable
+	// for the Pod. Will be updated periodically until
+	// the claim is allocated.
+	PotentialNodes []string
 }
 
+// DriverSchedulingStatus contains information provided by the resource driver
+// while handling delayed allocation.
 type DriverSchedulingStatus struct {
-   // A change of the PotentialNodes field triggers a check
-   // in the driver on which of those nodes the resource
-   // might be made available. It then excludes nodes
-   // by listing those where that is not the case in
-   // UnsuitableNodes.
-   //
-   // Unsuitable nodes will be ignored by the scheduler
-   // when selecting a node for a Pod. All other nodes are
-   // potential candidates, either because no information
-   // is available yet or because allocation might
-   // succeed.
-   //
-   // This can change, so the driver must refresh
-   // this information periodically and/or after
-   // changing resource allocation for some other
-   // ResourceClaim until a node gets selected by
-   // the scheduler.
-   UnsuitableNodes []string
+	// Only nodes matching the selector will be considered by the scheduler
+	// when trying to find a Node that fits a Pod. A resource driver can
+	// set this immediately when a ResourceClaim gets created and, for
+	// example, provide a static selector that uses labels.
+	//
+	// Setting this field is optional. If nil, all nodes are candidates.
+	SuitableNodes *core.NodeSelector
 
-   // This field will get set by the resource driver to
-   // inform the scheduler where it can schedule Pods
-   // using the ResourceClaim.
-   //
-   // A resource driver may already set this before
-   // the resource is allocated. The scheduler will
-   // then check this field in addition to UnsuitableNodes
-   // to filter out nodes where the resource cannot
-   // be allocated.
-   //
-   // For an allocated resource this field defines
-   // where the resource can be used by Pods.
-   //
-   // Setting this field is optional. If nil, the
-   // resource is available everywhere.
-   AvailableOnNodes *corev1.NodeSelector
+	// A change of the PotentialNodes field triggers a check in the driver
+	// on which of those nodes the resource might be made available. It
+	// then excludes nodes by listing those where that is not the case in
+	// UnsuitableNodes.
+	//
+	// Unsuitable nodes will be ignored by the scheduler when selecting a
+	// node for a Pod. All other nodes are potential candidates, either
+	// because no information is available yet or because allocation might
+	// succeed.
+	//
+	// This can change, so the driver must refresh this information
+	// periodically and/or after changing resource allocation for some
+	// other ResourceClaim until a node gets selected by the scheduler.
+	UnsuitableNodes []string
+}
+
+// AllocationResult contains attributed of an allocated resource.
+type AllocationResult struct {
+	// Attributes contains arbitrary data returned by the driver after a
+	// successful allocation.  This data is passed to the driver for all
+	// operations involving the allocated resource. This is opaque for
+	// Kubernetes.  Driver documentation may explain to users how to
+	// interpret this data if needed.
+	//
+	// The attributes must be sufficient to deallocate the resource because
+	// the ResourceClass might not be available anymore when deallocation
+	// starts.
+	Attributes map[string]string
+
+	// This field will get set by the resource driver after it has
+	// allocated the resource driver to inform the scheduler where it can
+	// schedule Pods using the ResourceClaim.
+	//
+	// A resource driver may already set this before the resource is
+	// allocated. The scheduler will then check this field in addition to
+	// UnsuitableNodes to filter out nodes where the resource cannot be
+	// allocated.
+	//
+	// Setting this field is optional. If nil, the resource is available
+	// everywhere.
+	AvailableOnNodes *core.NodeSelector
+
+	// UserLimit determines how many entities are allowed to use this
+	// resource at the same time. The default is 1. -1 enables the usage by
+	// an unlimited number of users. Individual containers in a pod are not
+	// counted as users, only the Pod is.
+	UserLimit int
 }
 
 type PodSpec {
@@ -924,48 +978,52 @@ type  ResourceRequirements {
 // by embedding a template for a ResourceClaim that will get created
 // by the resource claim controller in kube-controller-manager.
 type PodResourceClaim struct {
-   // A name under which this resource can be referenced by the containers.
-   Name string
+	// A name under which this resource can be referenced by the containers.
+	Name string
 
-   // The resource is independent of the Pod and defined by
-   // a separate ResourceClaim in the same namespace as
-   // the Pod. Either this or Template must be set, but not both.
-   ResourceClaimName *string
+	// The resource is independent of the Pod and defined by
+	// a separate ResourceClaim in the same namespace as
+	// the Pod. Either this or Template must be set, but not both.
+	ResourceClaimName *string
 
-    // Will be used to create a stand-alone ResourceClaim to allocate the resource.
-    // The pod in which this PodResource is embedded will be the
-    // owner of the ResourceClaim, i.e. the ResourceClaim will be deleted together with the
-    // pod.  The name of the ResourceClaim will be `<pod name>-<resource name>` where
-    // `<resource name>` is the name PodResource.Name
-    // Pod validation will reject the pod if the concatenated name
-    // is not valid for a ResourceClaim (for example, too long).
-    //
-    // An existing ResourceClaim with that name that is not owned by the pod
-    // will *not* be used for the pod to avoid using an unrelated
-    // resource by mistake. Starting the pod is then blocked until
-    // the unrelated ResourceClaim is removed. If such a pre-created ResourceClaim is
-    // meant to be used by the pod, the ResourceClaim has to be updated with an
-    // owner reference to the pod once the pod exists. Normally
-    // this should not be necessary, but it may be useful when
-    // manually reconstructing a broken cluster.
-    //
-    // This field is read-only and no changes will be made by Kubernetes
-    // to the ResourceClaim after it has been created.
-    // Either this or ResourceClaimName must be set, but not both.
-   Template *ResourceClaimTemplate
+	// Will be used to create a stand-alone ResourceClaim to allocate the resource.
+	// The pod in which this PodResource is embedded will be the
+	// owner of the ResourceClaim, i.e. the ResourceClaim will be deleted together with the
+	// pod.  The name of the ResourceClaim will be `<pod name>-<resource name>` where
+	// `<resource name>` is the name PodResource.Name
+	// Pod validation will reject the pod if the concatenated name
+	// is not valid for a ResourceClaim (for example, too long).
+	//
+	// An existing ResourceClaim with that name that is not owned by the pod
+	// will *not* be used for the pod to avoid using an unrelated
+	// resource by mistake. Starting the pod is then blocked until
+	// the unrelated ResourceClaim is removed. If such a pre-created ResourceClaim is
+	// meant to be used by the pod, the ResourceClaim has to be updated with an
+	// owner reference to the pod once the pod exists. Normally
+	// this should not be necessary, but it may be useful when
+	// manually reconstructing a broken cluster.
+	//
+	// This field is read-only and no changes will be made by Kubernetes
+	// to the ResourceClaim after it has been created.
+	// Either this or ResourceClaimName must be set, but not both.
+	Template *ResourceClaimTemplate
 }
 
+// ResourceClaimTemplate is used to produce ResourceClaim objects by embedding
+// such a template in the ResourceRequirements of a Pod.
 type ResourceClaimTemplate struct {
-    // May contain labels and annotations that will be copied into the ResourceClaim
-    // when creating it. No other fields are allowed and will be rejected during
-    // validation.
-    metav1.ObjectMeta
+	// May contain labels and annotations that will be copied into the PVC
+	// when creating it. No other fields are allowed and will be rejected during
+	// validation.
+	//
+	// +optional
+	metav1.ObjectMeta
 
-    // The specification for the ResourceClaim. The entire content is
-    // copied unchanged into the ResourceClaim that gets created from this
-    // template. The same fields as in a ResourceClaim
-    // are also valid here.
-    Spec ResourceClaimSpec
+	// The specification for the ResourceClaim. The entire content is
+	// copied unchanged into the PVC that gets created from this
+	// template. The same fields as in a ResourceClaim
+	// are also valid here.
+	Spec ResourceClaimSpec
 }
 ```
 
@@ -986,10 +1044,35 @@ example kubelet on a node that shut down unexpectedly.
 
 ### kube-scheduler
 
-The scheduler plugin needs to implement several extension points. The [volume
+The scheduler plugin needs to implement several extension points. It handles
+communication with a resource driver through the apiserver. The [volume
 binder
 plugin](https://github.com/kubernetes/kubernetes/tree/master/pkg/scheduler/framework/plugins/volumebinding)
 can serve as a reference.
+
+In addition, kube-scheduler can be configured to contact a resource driver
+directly as a scheduler extender. This can avoid the need to communicate the
+list of potential and unsuitable nodes through the apiserver:
+
+```
+# to be decided: extend existing versions (like pkg/scheduler/apis/config/v1beta2)
+# or add a new alpha version?
+type Extender struct {
+...
+       // ManagedResourceDrivers is a list of resource driver names that are managed
+       // by this extender. A pod will be sent to the extender on the Filter, Prioritize
+       // and Bind (if the extender is the binder) phases iff the pod requests at least
+       // one ResourceClaim for which the resource driver name in the corresponding
+       // ResourceClass is listed here. In addition, the builtin dynamic resources
+       // plugin will skip setting SuitableNodes for claims managed by the extender
+       // if the extender has a FilterVerb.
+       ManagedResourceDrivers []string
+```
+
+The existing extender plugin must check this field to decide when to contact
+the extender.
+
+The following extension points are implemented in the new plugin:
 
 #### Pre-filter
 
@@ -1050,7 +1133,8 @@ might attempt to improve this.
 This is passed a list of nodes that have passed filtering by the resource
 plugin and the other plugins. The PotentialNodes field of unallocated
 ResourceClaims with delayed allocation gets updated now if the field doesn't
-match the current list already.
+match the current list already and there is no scheduler extender for the
+claim.
 
 #### Reserve
 
