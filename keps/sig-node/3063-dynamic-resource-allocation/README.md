@@ -186,10 +186,10 @@ Users are increasingly deploying Kubernetes as management solution for new
 workloads (batch processing) and in new environments (edge computing). Such
 workloads no longer need just RAM and CPU, but also access to specialized
 hardware. With upcoming enhancements of data center interconnects, accelerators
-no longer need to be physically plugged into the nodes where they are
-used. Instead, accelerators can be added to nodes dynamically as needed.
+can be installed outside of specific nodes and be connected to nodes
+dynamically as needed.
 
-This KEP introduces a new API for describing which of these new resource kinds
+This KEP introduces a new API for describing which of these new resources
 a pod needs. The API supports:
 
 - Network-attached resources. The existing [device manager API](https://github.com/kubernetes/community/blob/master/contributors/design-proposals/resource-management/device-plugin.md)
@@ -202,8 +202,9 @@ a pod needs. The API supports:
 - Using a resource that is expensive to initialize multiple times
   in different pods. This is not possible at the moment.
 - Custom parameters that describe resource requirements and initialization.
-  With the current Kubernetes API, only pod annotations can be used
-  as replacement for such parameters, which is not user-friendly.
+  With the current Pod API, annotations have to be used to capture such
+  parameters and then hacks are needed to access them from a CSI driver or
+  device plugin.
 
 Support for new hardware will be provided by hardware vendor add-ons. It will
 not be necessary anymore to modify Kubernetes itself.
