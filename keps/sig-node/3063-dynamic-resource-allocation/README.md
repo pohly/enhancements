@@ -192,7 +192,7 @@ dynamically as needed.
 This KEP introduces a new API for describing which of these new resources
 a pod needs. The API supports:
 
-- Network-attached resources. The existing [device manager API](https://github.com/kubernetes/community/blob/master/contributors/design-proposals/resource-management/device-plugin.md)
+- Network-attached resources. The existing [device plugin API](https://github.com/kubernetes/design-proposals-archive/blob/main/resource-management/device-plugin.md)
   is limited to hardware on a node.
 - Sharing of a resource allocation between multiple containers or pods.
   The device manager API currently cannot share resources at all. It
