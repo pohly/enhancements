@@ -432,11 +432,11 @@ pre-provisioned resources against claims because it has no understanding about t
 parameters.
 
 Allocation of a resource happens either immediately when a ResourceClaim gets
-created (“immediate allocation”) or when when a Pod is getting scheduled which
+created (“immediate allocation”) or when a Pod is getting scheduled which
 needs the resource (“delayed allocation”),
 depending on a flag in the ResourceClaim spec. Pods reference resource
 claims in a new PodSpec.Resources list. Each resource in that list
-then can be made available to one or more containers in that Pod.
+can then be made available to one or more containers in that Pod.
 
 Immediate allocation is useful when allocating a resource is expensive (for
 example, programming an FPGA) and the resource therefore is meant to be used by
