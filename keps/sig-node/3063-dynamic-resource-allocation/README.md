@@ -78,6 +78,7 @@ SIG Architecture for cross-cutting KEPs).
     - [Cluster add-on development](#cluster-add-on-development)
     - [Cluster configuration](#cluster-configuration)
     - [Partial GPU allocation](#partial-gpu-allocation)
+    - [Combined setup of different hardware functions](#combined-setup-of-different-hardware-functions)
   - [Notes/Constraints/Caveats (Optional)](#notesconstraintscaveats-optional)
   - [Risks and Mitigations](#risks-and-mitigations)
 - [Design Details](#design-details)
@@ -97,6 +98,7 @@ SIG Architecture for cross-cutting KEPs).
     - [Communication between kubelet and resource kubelet plugin](#communication-between-kubelet-and-resource-kubelet-plugin)
       - [<code>NodePrepareResource</code>](#)
       - [<code>NodeUnprepareResource</code>](#-1)
+    - [Implementing optional resources](#implementing-optional-resources)
     - [Implementing a plugin for node resources](#implementing-a-plugin-for-node-resources)
   - [Test Plan](#test-plan)
   - [Graduation Criteria](#graduation-criteria)
@@ -398,24 +400,31 @@ A [recent KEP](https://github.com/kubernetes/enhancements/tree/master/keps/sig-a
 clarified that status will always be stored reliably and can be used as
 proposed in this KEP.
 
-To support arbitrarily complex parameters, both ResourceClass and
-ResourceClaim contain one field which holds a
-[runtime.RawExtension](https://pkg.go.dev/k8s.io/apimachinery/pkg/runtime#RawExtension) (see [user stories](#user-stories) for examples).
-Validation can be handled by drivers through an
-admission controller (if desired) or later at runtime when the
-parameters are passed to the driver.
+To support arbitrarily complex parameters, both ResourceClass and ResourceClaim
+contain one field of type
+[v1.ObjectReference](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.23/#objectreference-v1-core)
+which references a separate object.  At least apiVersion, name and kind or
+resource must be set. This information is sufficient for generic clients to
+retrieve the parameters. For ResourceClass, that object must be
+cluster-scoped. For ResourceClaim, it must be in the same namespace as the
+ResourceClaim. Which objects a resource driver accepts as parameters depends on
+the driver.
 
-The reasons for choosing embedded RawExtension fields fields instead of
-references to a custom resource (CR) that is defined by a driver's custom
-resource definition (CRD) are:
+This approach was chosen because then validation of the parameters can be done
+with a CRD and that validation will work regardless of where the parameters
+are needed.
 
-- Immutability can be enforced: a separate object could always get
-  deleted and recreated with new content.
-- More user-friendly because there is no need to manage an additional
-  object.
-- Less risky resource driver deployment and updates: CRs get deleted when
-  removing their CRD, which would render existing workloads unusable until
-  users redeploy them.
+A resource driver may support modification of the parameters while a resource
+is in use ("online resizing"). It may update the ResourceClaim status to
+reflect the modified state, for example by increasing the number of concurrent
+users. However, the state must not be modified such that a user of the resource
+no longer has access.
+
+Parameters may get deleted before the ResourceClaim or ResourceClass that
+references them. In that case, a pending resource cannot be allocated until the
+parameters get recreated. An allocated resource must remain usable and freeing
+it must be possible. To support this, resource drivers must copy all relevant
+information into the ResourceClaim status when allocating it.
 
 Kube-scheduler
 and resource driver communicate by modifying that status. The status is also
@@ -478,6 +487,25 @@ request allocation again. If no node fits because some resources were
 already allocated for a node and are only usable there, then those
 resources must be released and then get allocated elsewhere.
 
+This is a summary of the necessary [kube-scheduler changes](#kube-scheduler) in
+pseudo-code:
+
+```
+while <pod needs to be scheduled> {
+  <choose a node, considering potential availability for those resources
+   which are not allocated yet and the hard constraints for those which are>
+  if <no node fits the pod> {
+    if <at least one resource is allocated, unused and was not available on a node> {
+      <randomly pick one of those resources and tell resource driver to free it>
+    }
+  } else if <all resources allocated> {
+    <schedule pod onto node>
+  } else if <some unallocated resource uses delayed allocation> {
+    <tell resource driver to allocate for the chosen node>
+  }
+}
+```
+
 The resources allocated for a ResourceClaim can be shared by multiple
 containers in a pod. Depending on the capabilities defined in the
 ResourceClaim by the driver, a ResourceClaim can be used exclusively
@@ -522,15 +550,23 @@ I create a ResourceClass for the hardware with parameters that only I as the
 administrator am allowed to choose, like for example running a command with
 root privileges that does some cluster-specific initialization for each allocation:
 ```
+apiVersion: gpu.acme.com/v1
+kind: GPUInit
+metadata:
+  name: acme-gpu-init
+initCommand:
+- /usr/local/bin/acme-gpu-init
+- --cluster
+- my-cluster
+---
 apiVersion: cdi.k8s.io/v1alpha1
 metadata:
   name: acme-gpu
 driverName: gpu.acme.com
 parameters:
-  initCommand:
-  - /usr/local/bin/acme-gpu-init
-  - --cluster
-  - my-cluster
+  apiVersion: gpu.acme.com/v1
+  kind: GPUInit
+  name: acme-gpu-init
 ```
 
 #### Partial GPU allocation
@@ -543,6 +579,12 @@ an "acme-gpu" ResourceClass.
 For a simple trial, I create a Pod directly where two containers share the same subset
 of the GPU:
 ```
+apiVersion: gpu.acme.com/v1
+kind: GPURequirements
+metadata:
+  name: device-consumer-gpu-parameters
+memory: "2Gi"
+---
 apiVersion: v1
 kind: Pod
 metadata:
@@ -553,7 +595,9 @@ spec:
     template:
       resourceClassName: "acme-gpu"
       parameters:
-        memory: "2Gi"
+        apiVersion: gpu.acme.com/v1
+        kind: GPURequirements
+        name: device-consumer-gpu-parameters
   containers:
   - name: workload
     image: my-app
@@ -587,6 +631,15 @@ capacity of the GPU can be used by other pods. The lifecycle of the resource
 allocation is tied to the lifecycle of the Pod.
 
 In production, a similar PodTemplateSpec in a Deployment will be used.
+
+#### Combined setup of different hardware functions
+
+As a 5G telco operator, I want to use the FPGA IP block, signal processor and
+network interfaces provided by the [Intel FPGA
+N3000](https://www.intel.com/content/www/us/en/products/details/fpga/platforms/pac/n3000.html)
+card in a Kubernetes edge cluster. Intel provides a single resource driver that
+has parameters for setting up all of these hardware functions together as
+needed for a data flow pipeline.
 
 ### Notes/Constraints/Caveats (Optional)
 
@@ -712,12 +765,19 @@ type ResourceClass struct {
 	// (acme.example.com).
 	DriverName string
 
-	// Parameters holds arbitrary values that will be available to the
+	// Parameters references an arbitrary separate object that may hold
+	// parameters that will be used by the
 	// driver when allocating a resource that uses this class. The driver
 	// will be able to distinguish between parameters stored here and and
 	// those stored in ResourceClaimSpec. These parameters here can only be
 	// set by cluster administrators.
-	Parameters runtime.RawExtension
+	//
+	// The object must be cluster-scoped, so the namespace must be empty.
+	// ApiVersion and name must be set. Kind and/or resource must be set.
+	// Usually, kind is sufficient because there will be a 1:1 mapping
+	// to resource. If UID is set, then only that specific object
+	// may be used.
+	Parameters v1.ObjectReference
 }
 
 // ResourceClaim is created by users to describe which resources they need.
@@ -755,9 +815,17 @@ type ResourceClaimSpec struct {
 	// reject claims where the class is missing.
 	ResourceClassName string
 
-	// Parameters holds arbitrary values that will be available to the
+	// Parameters references a separate object with arbitrary parameters
+	// that will be used by the
 	// driver when allocating a resource for the claim.
-	Parameters runtime.RawExtension
+	//
+	// The object must be in the same namespace as the ResourceClaim.
+	// An empty namespace field defaults to that namespace.
+	// ApiVersion and name must be set. Kind and/or resource must be set.
+	// Usually, kind is sufficient because there will be a 1:1 mapping
+	// to resource. If UID is set, then only that specific object
+	// may be used.
+	Parameters v1.ObjectReference
 
 	// Allocation can start immediately or when a Pod wants to use the
 	// resource. Waiting for a Pod is the default.
@@ -787,10 +855,6 @@ const (
 // ResourceClaimStatus tracks whether the resource has been allocated and what
 // the resulting attributes are.
 type ResourceClaimStatus struct {
-	// Phase explains what the current status of the claim is
-	// and determines which component needs to do something.
-	Phase ResourceClaimPhase
-
 	// DriverName is a copy of the driver name from the ResourceClass at
 	// the time when allocation started. It's necessary to support
 	// deallocation when the class gets deleted before a claim.
@@ -804,8 +868,18 @@ type ResourceClaimStatus struct {
 	Scheduling SchedulingStatus
 
 	// Allocation is set by the resource driver once a resource has been
-	// allocated succesfully.
-	Allocation AllocationResult
+	// allocated successfully. Nil indicates that the resource is not
+	// allocated.
+	Allocation *AllocationResult
+
+	// Deallocate may be set to true to request freeing a resource as soon
+	// as it is unused. The scheduler uses this when it finds that freeing
+	// the resource and reallocating it elsewhere might unblock a pod.
+	//
+	// The resource driver checks this fields and resets it to false
+	// together with clearing the Allocation field. It also sets it
+	// to false when the resource is not allocated.
+	Deallocate bool
 
 	// ReservedFor indicates which entities are currently allowed to use
 	// the resource.  Usually those are Pods, but any other object that
@@ -831,33 +905,6 @@ type ResourceClaimStatus struct {
 	// this to limit which ResourceClaims it receives from the apiserver.
 	UsedOnNodes []string
 }
-
-// ResourceClaimPhase determines whether a ResourceClaim is currently pending
-// (ResourceClaimPending), allocated (ResourceClaimAllocated) or needs to be
-// reallocated (ResourceClaimReallocate). Other phases may get added in the
-// future.
-type ResourceClaimPhase string
-
-const (
-	// The claim is waiting for allocation by the driver.
-	//
-	// For delayed allocation, the driver will wait for a selected node
-	// before it starts an allocation attempt.
-	ResourceClaimPending ResourceClaimPhase = "Pending"
-
-	// Set by the driver once the resource has been successfully
-	// allocated. The scheduler waits for all resources used by
-	// a Pod to be in this phase.
-	ResourceClaimAllocated ResourceClaimPhase = "Allocated"
-
-	// It can happen that a resource got allocated for a Pod and then the
-	// Pod cannot be scheduled onto the nodes where the allocated resource
-	// is available. The scheduler detects this and then sets the
-	// “reallocate” phase to tell the driver that it must free the
-	// resource. The driver does that and resets the ResourceClaimPhase
-	// back to "Pending".
-	ResourceClaimReallocate ResourceClaimPhase = "Reallocate"
-)
 
 // SchedulingStatus is used while handling delayed allocation.
 type SchedulingStatus struct {
@@ -1118,8 +1165,8 @@ conditions apply:
 - it was the reason why some node could not fit the Pod, as recorded earlier in
   Filter
 
-One of the ResourceClaims satisfying these criteria is picked randomly and its
-Phase is set to Deallocate. This may make it possible to run the Pod
+One of the ResourceClaims satisfying these criteria is picked randomly and freeing
+it is requested by setting the Deallocate field. This may make it possible to run the Pod
 elsewhere. If it still doesn't help, deallocation may continue with another
 ResourceClaim, if there is one. To prevent deallocating all resources merely
 because the scheduler happens to check quickly, the next deallocation will only
@@ -1307,6 +1354,17 @@ code.
 |-----------|-----------|-------------|-------------------|
 | Resource does not exist | 5 NOT_FOUND | Indicates that a resource corresponding to the specified `resource_id` does not exist. | Caller MUST verify that the `resource_id` is correct and that the resource is accessible and has not been deleted before retrying with exponential back off. |
 
+#### Implementing optional resources
+
+This can be handled entirely by a resource driver: its parameters can support a
+range starting at zero or a boolean flag that indicates that something is not a
+hard requirement. When asked to filter nodes for delayed allocation, the driver
+reports nodes where the resource is available and only falls back to those
+without it when resources are exhausted. When asked to allocate, it reserves
+actual resources if possible, but also proceeds with marking the ResourceClaim
+as allocated if that is not possible. Kubernetes then can schedule a pod using
+the ResourceClaim. The pod needs to determine through information passed in by
+the resource driver which resources are actually available to it.
 
 #### Implementing a plugin for node resources
 
