@@ -101,6 +101,10 @@ SIG Architecture for cross-cutting KEPs).
     - [Implementing optional resources](#implementing-optional-resources)
     - [Implementing a plugin for node resources](#implementing-a-plugin-for-node-resources)
   - [Test Plan](#test-plan)
+      - [Prerequisite testing updates](#prerequisite-testing-updates)
+      - [Unit tests](#unit-tests)
+      - [Integration tests](#integration-tests)
+      - [e2e tests](#e2e-tests)
   - [Graduation Criteria](#graduation-criteria)
     - [Alpha -&gt; Beta Graduation](#alpha---beta-graduation)
     - [Beta -&gt; GA Graduation](#beta---ga-graduation)
@@ -1402,10 +1406,77 @@ module.
 
 ### Test Plan
 
-Unit tests will be added together with all new code. End-to-end testing depends
-on a working resource driver and a container runtime with CDI support. A mock
-driver will be developed in parallel to developing the code in Kubernetes, but
-as it will depend on the new APIs, we have to get those merged first.
+[X] I/we understand the owners of the involved components may require updates to
+existing tests to make this code solid enough prior to committing the changes necessary
+to implement this enhancement.
+
+##### Prerequisite testing updates
+
+<!--
+Based on reviewers feedback describe what additional tests need to be added prior
+implementing this enhancement to ensure the enhancements have also solid foundations.
+-->
+
+##### Unit tests
+
+<!--
+In principle every added code should have complete unit test coverage, so providing
+the exact set of tests will not bring additional value.
+However, if complete unit test coverage is not possible, explain the reason of it
+together with explanation why this is acceptable.
+-->
+
+<!--
+Additionally, for Alpha try to enumerate the core package you will be touching
+to implement this enhancement and provide the current unit coverage for those
+in the form of:
+- <package>: <date> - <current test coverage>
+The data can be easily read from:
+https://testgrid.k8s.io/sig-testing-canaries#ci-kubernetes-coverage-unit
+
+This can inform certain test coverage improvements that we want to do before
+extending the production code to implement this enhancement.
+-->
+
+- `k8s.io/kubernetes/pkg/scheduler`: 2022-05-24 - 75.0%
+- `k8s.io/kubernetes/pkg/scheduler/framework`: 2022-05-24 - 76.3%
+- `k8s.io/kubernetes/pkg/controller`: 2022-05-24 - 69.4%
+- `k8s.io/kubernetes/pkg/kubelet`: 2022-05-24 - 64.5%
+
+##### Integration tests
+
+<!--
+This question should be filled when targeting a release.
+For Alpha, describe what tests will be added to ensure proper quality of the enhancement.
+
+For Beta and GA, add links to added tests together with links to k8s-triage for those tests:
+https://storage.googleapis.com/k8s-triage/index.html
+-->
+
+The existing integration tests for kube-scheduler and kubelet will get extended
+to cover scenarios involving dynamic resources. A new integration test will get
+added for the dynamic resource controller.
+
+For beta:
+
+- <test>: <link to test coverage>
+
+##### e2e tests
+
+<!--
+This question should be filled when targeting a release.
+For Alpha, describe what tests will be added to ensure proper quality of the enhancement.
+
+For Beta and GA, add links to added tests together with links to k8s-triage for those tests:
+https://storage.googleapis.com/k8s-triage/index.html
+
+We expect no non-infra related flakes in the last month as a GA graduation criteria.
+-->
+
+End-to-end testing depends on a working resource driver and a container runtime
+with CDI support. A mock driver will be developed in parallel to developing the
+code in Kubernetes, but as it will depend on the new APIs, we have to get those
+merged first.
 
 Such a mock driver could be as simple as taking parameters from ResourceClass
 and ResourceClaim and turning them into environment variables that then get
@@ -1426,6 +1497,9 @@ Once we have end-to-end tests, at least two Prow jobs will be defined:
   this KEP (`optional: false`, `run_if_changed` set, `always_run: false`).
 - A periodic job that runs the same tests to determine stability and detect
   unexpected regressions.
+
+For beta:
+- <test>: <link to test coverage>
 
 ### Graduation Criteria
 
