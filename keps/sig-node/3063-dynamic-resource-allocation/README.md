@@ -93,6 +93,7 @@ SIG Architecture for cross-cutting KEPs).
     - [Pre-score](#pre-score)
     - [Reserve](#reserve)
     - [Unreserve](#unreserve)
+  - [Cluster Autoscaler](#cluster-autoscaler)
   - [kubelet](#kubelet)
     - [Managing resources](#managing-resources)
     - [Communication between kubelet and resource kubelet plugin](#communication-between-kubelet-and-resource-kubelet-plugin)
@@ -1210,6 +1211,87 @@ or when the ResourceClaims change.
 The scheduler removes the Pod from the ReservedFor field because it cannot be scheduled after
 all.
 
+### Cluster Autoscaler
+
+When [Cluster
+Autoscaler](https://github.com/kubernetes/autoscaler/tree/master/cluster-autoscaler#cluster-autoscaler)
+encounters a pod that uses a resource claim, the autoscaler needs assistance by
+the resource driver for that claim to make the right decisions. Without that
+assistance, the autoscaler might scale up the wrong node group (resource is
+provided by nodes in another group) or scale up unnecessarily (resource is
+network-attached and adding nodes won't help).
+
+At the start of a scale up or scale down cycle, autoscaler takes a snapshot of
+the current cluster state. Then autoscaler determines whether a real or
+fictional node fits a pod by calling the pre-filter and filter extension points
+of scheduler plugins. If a pod fits a node, the snapshot is updated by calling
+[NodeInfo.AddPod](https://github.com/kubernetes/kubernetes/blob/7e3c98fd303359cb9f79dfc691da733a6ca2a6e3/pkg/scheduler/framework/types.go#L620-L623). This
+influences further checks for other pending pods.
+
+To support the custom allocation logic that a vendor uses for its resources,
+the autoscaler needs an extension mechanism similar to the [scheduler
+extender](https://github.com/kubernetes/kubernetes/blob/7e3c98fd303359cb9f79dfc691da733a6ca2a6e3/pkg/scheduler/framework/extender.go#L24-L72). The
+existing scheduler extender API has to be extended to include methods that
+would only get called by the autoscaler, like starting a cycle. Instead of
+adding these methods to the scheduler framework, autoscaler can define its own
+interface that inherits from the framework:
+
+```
+import "k8s.io/pkg/scheduler/framework"
+
+type Extender interface {
+    framework.Extender
+
+    // NodeSelected gets called when the autoscaler determined that
+    // a pod should run on a node.
+    NodeSelected(pod *v1.Pod, node *v1.Node) error
+
+    // NodeReady gets called by the autoscaler to check whether
+    // a new node is fully initialized.
+    NodeReady(nodeName string) (bool, error)
+}
+```
+
+The underlying implementation can either be compiled into a custom autoscaler
+binary by cloud provider who controls the entire cluster or use HTTP similar to
+the [HTTP
+extender](https://github.com/kubernetes/kubernetes/blob/7e3c98fd303359cb9f79dfc691da733a6ca2a6e3/pkg/scheduler/extender.go#L41-L53).
+As an initial step, configuring such HTTP webhooks for different resource
+drivers can be added to the configuration file defined by the `--cloud-config`
+configuration file with a common field that gets added in all cloud provider
+configs or a new `--config` parameter can be added. Later, dynamically
+discovering deployed webhooks can be added through an autoscaler CRD.
+
+In contrast to the in-tree HTTP extender implementation, the one for autoscaler
+must be session oriented: when creating the extender for a cycle, a new "start"
+verb needs to be invoked. When this is called in a resource driver controller
+webhook, it needs to take a snapshot of the relevant state and return a session
+ID. This session ID must be included in all following HTTP invocations as a
+"session" header. Ensuring that a "stop" verb gets called reliably would
+complicate the autoscaler. Instead, the webhook should support a small number
+of recent session and garbage-collect older ones.
+
+The existing `extenderv1.ExtenderArgs` and `extenderv1.ExtenderFilterResult`
+API can be used for the "filter" operation. The extender can be added to the
+list of active scheduler plugins because it implements the plugin interface.
+Because filter operations may involve fictional nodes, the full `Node` objects
+instead of just the node names must be passed. For fictional nodes, the
+resource driver must determine based on labels which resources it can provide
+on such a node. New APIs are needed for `NodeSelected` and `NodeReady`.
+
+`NodeReady` is needed to solve one particular problem: when a new node first
+starts up, it may be ready to run pods, but the pod from a resource driver's
+DaemonSet may still be starting up. If the resource driver controller needs
+information from such a pod, then it will not be able to filter
+correctly. Similar to how extended resources are handled, the autoscaler then
+first needs to wait until the extender also considers the node to be ready.
+
+Such extenders completely replace the generic scheduler resource plugin. The
+generic plugin would be able to filter out nodes based on already allocated
+resources. But because it is stateless, it would not handle the use count
+restrictions correctly when multiple pods are pending and reference the same
+resource.
+
 ### kubelet
 
 #### Managing resources
@@ -1505,7 +1587,7 @@ For beta:
 
 #### Alpha -> Beta Graduation
 
-- Resolve integration with Cluster Autoscaler
+- Implement integration with Cluster Autoscaler
 - Gather feedback from developers and surveys
 - Tests are in Testgrid and linked in KEP
 - In addition to the basic features, we also handle:
