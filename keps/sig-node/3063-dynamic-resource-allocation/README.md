@@ -1314,6 +1314,9 @@ successfully. This ensures that network-attached resource are available again
 for other Pods, including those that might get scheduled to other nodes. It
 also signals that it is safe to deallocate and delete the ResourceClaim.
 
+
+![kubelet](./kubelet.png)
+
 #### Communication between kubelet and resource kubelet plugin
 
 Resource kubelet plugins are discovered through the [kubelet plugin registration
@@ -1332,8 +1335,16 @@ with “volume” replaced by “resource” and volume specific parts removed.
 This RPC is called by kubelet when a Pod that wants to use the
 specified resource is scheduled on a node.  The Plugin SHALL assume
 that this RPC will be executed on the node where the resource will be
-used.  The Plugin SHALL return device name and kind for allocated
-device[s].
+used.  ResourceClaim.meta.Namespace, ResourceClaim.meta.UID,
+ResourceClaim.Name, ResourceClaim.meta.Namespace and
+ResourceClaimStatus.AllocationResult should be passed to the Plugin
+as parameters to identify the claim and perform resource preparation.
+
+ResourceClaim parameters(namespace, UUID, name) are useful for debugging
+and enable the resource driver to retrieve the full ResourceClaim object,
+should that ever be needed (normally it shouldn't).
+
+The Plugin SHALL return fully qualified device name[s].
 
 The Plugin SHALL ensure that there are json file[s] in CDI format
 for the allocated resource. These files SHALL be used by runtime to
@@ -1358,8 +1369,18 @@ protocol.
 
 ```protobuf
 message NodePrepareResourceRequest {
-  // The UID of the ResourceClaim. This field is REQUIRED.
-  string resource_uid = 1;
+  // The ResourceClaim namespace (ResourceClaim.meta.Namespace).
+  // This field is REQUIRED.
+  namespace string = 1
+  // The UID of the Resource claim (ResourceClaim.meta.UUID).
+  // This field is REQUIRED.
+  string claim_uid = 2;
+  // The name of the Resource claim (ResourceClaim.meta.Name)
+  // This field is REQUIRED.
+  string claim_name = 3
+  // Allocation attributes (AllocationResult.Attributes)
+  // This field is REQUIRED.
+  map<string, string> attributes = 4;
 }
 
 message NodePrepareResourceResponse {
@@ -1415,11 +1436,18 @@ not know if it failed or not, it can choose to call
 
 ```protobuf
 message NodeUnprepareResourceRequest {
-  // The UID of the ResourceClaim. This field is REQUIRED.
-  string resource_id = 1;
+  // The ResourceClaim namespace (ResourceClaim.meta.Namespace).
+  // This field is REQUIRED.
+  namespace string = 1
+  // The UID of the Resource claim (ResourceClaim.meta.UUID).
+  // This field is REQUIRED.
+  string claim_uid = 2;
+  // The name of the Resource claim (ResourceClaim.meta.Name)
+  // This field is REQUIRED.
+  string claim_name = 3
   // List of fully qualified CDI device names
   // Kubelet plugin returns them in the NodePrepareResourceResponse
-  repeated string cdi_device = 1;
+  repeated string cdi_device = 2;
 }
 
 message NodeUnprepareResourceResponse {
@@ -1724,6 +1752,22 @@ Pod scheduling and startup are more important. However, expected performance
 will depend on how resources are used (for example, how often new Pods are
 created), therefore it is impossible to predict what reasonable SLOs might be.
 
+The resource manager component will do its work similarly to the 
+existing volume manager, but the overhead and complexity should
+be lower:
+
+* Resource preparation should be fairly quick as in most cases it simply
+  creates CDI file 1-3 Kb in size. Unpreparing resource usually means
+  deleting CDI file, so it should be quick as well.
+
+* The complexity is lower than in the volume manager
+  because there is only one global operation needed (prepare vs. 
+  attach + publish for each pod).
+  
+* Reconstruction after a kubelet restart is simpler (call 
+  NodePrepareResource again vs. trying to determine whether 
+  volumes are mounted).
+
 ###### Are there any missing metrics that would be useful to have to improve observability of this feature?
 
 No.
@@ -1917,6 +1961,19 @@ currently declared on the Pod and Device Plugin level.
 
 Extending the Device Plugins API to use [Container Device Interface](https://github.com/container-orchestrated-devices/container-device-interface)
 would help address some of the requirements, but not all of them.
+
+NodePrepareResource and NodeUnprepareResource could be added to the Device Plugins API and only get called for
+resource claims.
+
+However, this would mean that
+developers of the Device Plugins would have to implement mandatory
+API calls (ListAndWatch, Allocate), which could create confusion
+as those calls are meaningless for the Dynamic Resource Allocation
+purposes.
+
+Even worse, existing device plugins would have to implement the new
+calls with stubs that return errors because the generated Go interface
+will require them.
 
 It should be also taken into account that Device Plugins API is
 beta. Introducing incompatible changes to it may not be accepted by
