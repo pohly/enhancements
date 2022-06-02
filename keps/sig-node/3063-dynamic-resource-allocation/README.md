@@ -1332,8 +1332,9 @@ with “volume” replaced by “resource” and volume specific parts removed.
 This RPC is called by kubelet when a Pod that wants to use the
 specified resource is scheduled on a node.  The Plugin SHALL assume
 that this RPC will be executed on the node where the resource will be
-used.  The Plugin SHALL return device name and kind for allocated
-device[s].
+used.  Resource Claim UID and allocation result attributes should be
+passed to the Plugin as parameters to perform this operation.
+The Plugin SHALL return device name and kind for allocated device[s].
 
 The Plugin SHALL ensure that there are json file[s] in CDI format
 for the allocated resource. These files SHALL be used by runtime to
@@ -1360,6 +1361,8 @@ protocol.
 message NodePrepareResourceRequest {
   // The UID of the ResourceClaim. This field is REQUIRED.
   string resource_uid = 1;
+  // Allocation attributes from AllocationResult
+  map<string, string> attributes = 2;
 }
 
 message NodePrepareResourceResponse {
@@ -1419,7 +1422,7 @@ message NodeUnprepareResourceRequest {
   string resource_id = 1;
   // List of fully qualified CDI device names
   // Kubelet plugin returns them in the NodePrepareResourceResponse
-  repeated string cdi_device = 1;
+  repeated string cdi_device = 2;
 }
 
 message NodeUnprepareResourceResponse {
