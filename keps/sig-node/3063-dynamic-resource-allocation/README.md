@@ -1921,6 +1921,13 @@ currently declared on the Pod and Device Plugin level.
 Extending the Device Plugins API to use [Container Device Interface](https://github.com/container-orchestrated-devices/container-device-interface)
 would help address some of the requirements, but not all of them.
 
+NodePrepareResource and NodeUnprepareResource could be added as optional
+calls to the Device Plugins API. However, this would mean that
+developers of the Device Plugins would have to implement mandatory
+API calls (ListAndWatch, Allocate), which could create confusion
+as those calls are meaningless for the Dynamic Resource Allocation
+purposes.
+
 It should be also taken into account that Device Plugins API is
 beta. Introducing incompatible changes to it may not be accepted by
 the Kubernetes community.
