@@ -1314,6 +1314,9 @@ successfully. This ensures that network-attached resource are available again
 for other Pods, including those that might get scheduled to other nodes. It
 also signals that it is safe to deallocate and delete the ResourceClaim.
 
+
+![kubelet](./kubelet.png)
+
 #### Communication between kubelet and resource kubelet plugin
 
 Resource kubelet plugins are discovered through the [kubelet plugin registration
