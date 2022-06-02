@@ -1727,6 +1727,14 @@ Pod scheduling and startup are more important. However, expected performance
 will depend on how resources are used (for example, how often new Pods are
 created), therefore it is impossible to predict what reasonable SLOs might be.
 
+There shouldn't be a significant performance impact on the Kubelet side as
+Resource manager component will do its work similarly to the Volume manager:
+both upper level components of the Resource manager (reconciler and
+desired state of world populator) will run as goroutines. Resource
+preparation should be fairly quick as in most cases it simply
+creates CDI file 1-3 Kb in size. Unpreparing resource usually means
+deleting CDI file, so it should be quick as well.
+
 ###### Are there any missing metrics that would be useful to have to improve observability of this feature?
 
 No.
