@@ -1944,6 +1944,10 @@ API calls (ListAndWatch, Allocate), which could create confusion
 as those calls are meaningless for the Dynamic Resource Allocation
 purposes.
 
+Even worse, existing device plugins would have to implement the new
+calls with stubs that return errors because the generated Go interface
+will require them.
+
 It should be also taken into account that Device Plugins API is
 beta. Introducing incompatible changes to it may not be accepted by
 the Kubernetes community.
