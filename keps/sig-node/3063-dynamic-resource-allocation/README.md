@@ -1335,8 +1335,15 @@ with “volume” replaced by “resource” and volume specific parts removed.
 This RPC is called by kubelet when a Pod that wants to use the
 specified resource is scheduled on a node.  The Plugin SHALL assume
 that this RPC will be executed on the node where the resource will be
-used.  Resource Claim UID and allocation result attributes should be
-passed to the Plugin as parameters to perform this operation.
+used.  ResourceClaim.meta.Namespace, ResourceClaim.meta.UID,
+ResourceClaim.Name, ResourceClaim.meta.Namespace and
+ResourceClaimStatus.AllocationResult should be passed to the Plugin
+as parameters to identify the claim and perform resource preparation.
+
+ResourceClaim parameters(namespace, UUID, name) are useful for debugging
+and enable the resource driver to retrieve the full ResourceClaim object,
+should that ever be needed (normally it shouldn't).
+
 The Plugin SHALL return device name and kind for allocated device[s].
 
 The Plugin SHALL ensure that there are json file[s] in CDI format
@@ -1362,10 +1369,18 @@ protocol.
 
 ```protobuf
 message NodePrepareResourceRequest {
-  // The UID of the ResourceClaim. This field is REQUIRED.
-  string resource_uid = 1;
-  // Allocation attributes from AllocationResult
-  map<string, string> attributes = 2;
+  // The ResourceClaim namespace (ResourceClaim.meta.Namespace).
+  // This field is REQUIRED.
+  namespace string = 1
+  // The UID of the Resource claim (ResourceClaim.meta.UUID).
+  // This field is REQUIRED.
+  string claim_uid = 2;
+  // The name of the Resource claim (ResourceClaim.meta.Name)
+  // This field is REQUIRED.
+  string claim_name = 3
+  // Allocation attributes (AllocationResult.Attributes)
+  // This field is REQUIRED.
+  map<string, string> attributes = 4;
 }
 
 message NodePrepareResourceResponse {
@@ -1421,8 +1436,15 @@ not know if it failed or not, it can choose to call
 
 ```protobuf
 message NodeUnprepareResourceRequest {
-  // The UID of the ResourceClaim. This field is REQUIRED.
-  string resource_id = 1;
+  // The ResourceClaim namespace (ResourceClaim.meta.Namespace).
+  // This field is REQUIRED.
+  namespace string = 1
+  // The UID of the Resource claim (ResourceClaim.meta.UUID).
+  // This field is REQUIRED.
+  string claim_uid = 2;
+  // The name of the Resource claim (ResourceClaim.meta.Name)
+  // This field is REQUIRED.
+  string claim_name = 3
   // List of fully qualified CDI device names
   // Kubelet plugin returns them in the NodePrepareResourceResponse
   repeated string cdi_device = 2;
