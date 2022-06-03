@@ -1752,18 +1752,21 @@ Pod scheduling and startup are more important. However, expected performance
 will depend on how resources are used (for example, how often new Pods are
 created), therefore it is impossible to predict what reasonable SLOs might be.
 
-Resource manager component will do its work similarly to the Volume manager, but the overhead and complexity should be lower:
-both upper level components of the Resource manager (reconciler and
-desired state of world populator) will run as goroutines. Resource
-preparation should be fairly quick as in most cases it simply
-creates CDI file 1-3 Kb in size. Unpreparing resource usually means
-deleting CDI file, so it should be quick as well.
-The complexity is lower than in the volume manager
-because there is only one global operation needed (prepare vs. 
-attach + publish for each pod) and reconstruction
-after a kubelet restart is simpler (call NodePrepareResource
-again vs. trying to determine whether volumes
-are mounted).
+The resource manager component will do its work similarly to the 
+existing volume manager, but the overhead and complexity should
+be lower:
+
+* Resource preparation should be fairly quick as in most cases it simply
+  creates CDI file 1-3 Kb in size. Unpreparing resource usually means
+  deleting CDI file, so it should be quick as well.
+
+* The complexity is lower than in the volume manager
+  because there is only one global operation needed (prepare vs. 
+  attach + publish for each pod).
+  
+* Reconstruction after a kubelet restart is simpler (call 
+  NodePrepareResource again vs. trying to determine whether 
+  volumes are mounted).
 
 ###### Are there any missing metrics that would be useful to have to improve observability of this feature?
 
