@@ -1344,7 +1344,7 @@ ResourceClaim parameters(namespace, UUID, name) are useful for debugging
 and enable the resource driver to retrieve the full ResourceClaim object,
 should that ever be needed (normally it shouldn't).
 
-The Plugin SHALL return device name and kind for allocated device[s].
+The Plugin SHALL return fully qualified device name[s].
 
 The Plugin SHALL ensure that there are json file[s] in CDI format
 for the allocated resource. These files SHALL be used by runtime to
