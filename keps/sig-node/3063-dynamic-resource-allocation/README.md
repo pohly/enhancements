@@ -1736,6 +1736,12 @@ desired state of world populator) will run as goroutines. Resource
 preparation should be fairly quick as in most cases it simply
 creates CDI file 1-3 Kb in size. Unpreparing resource usually means
 deleting CDI file, so it should be quick as well.
+The complexity is lower than in the volume manager
+because there is only one global operation needed (prepare vs. 
+attach + publish for each pod) and reconstruction
+after a kubelet restart is simpler (call NodePrepareResource
+again vs. trying to determine whether volumes
+are mounted).
 
 ###### Are there any missing metrics that would be useful to have to improve observability of this feature?
 
