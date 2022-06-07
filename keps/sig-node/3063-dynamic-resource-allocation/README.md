@@ -209,6 +209,7 @@ a pod needs. The API supports:
 - Using a resource that is expensive to initialize multiple times
   in different pods. This is not possible at the moment.
 - Custom parameters that describe resource requirements and initialization.
+  Parameters are not limited to a single, linear quantity that can be counted.
   With the current Pod API, annotations have to be used to capture such
   parameters and then hacks are needed to access them from a CSI driver or
   device plugin.
@@ -299,8 +300,9 @@ know that this has succeeded?
 -->
 
 * More flexibility:
-  * Arbitrary, resource-specific setup and cleanup actions
+  * Arbitrary parameters for resource requests
   * Network-attached resources
+  * Arbitrary, resource-specific setup and cleanup actions
   * Custom matching of resource requests with available resources,
     including handling of optional resource requests
 * User-friendly API for describing resource requests
@@ -315,7 +317,9 @@ What is out of scope for this KEP? Listing non-goals helps to focus discussion
 and make progress.
 -->
 
-* Replace the device manager API. Both are expected to co-exist, with vendors
+* Replace the device manager API. For resources that fit into its model
+  of a single, linear quantity it is a good solution. Other resources
+  should use dynamic resource allocation. Both are expected to co-exist, with vendors
   choosing the API that better suits their needs on a case-by-case
   basis. Because the new API is going to be implemented independently of the
   existing device manager, there's little risk of breaking stable APIs.
