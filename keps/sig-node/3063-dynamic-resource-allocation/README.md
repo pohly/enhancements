@@ -770,7 +770,7 @@ type ResourceClass struct {
 	// DriverName determines which resource driver is to be used for
 	// allocation of a ResourceClaim that uses this class.
 	//
-	// Resource drivers have a unique name in reverse domain order
+	// Resource drivers have a unique name in normal domain order
 	// (acme.example.com).
 	DriverName string
 
