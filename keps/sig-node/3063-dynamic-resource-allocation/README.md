@@ -1118,8 +1118,8 @@ type Extender struct {
 ...
        // ManagedResourceDrivers is a list of resource driver names that are managed
        // by this extender. A pod will be sent to the extender on the Filter, Prioritize
-       // and Bind (if the extender is the binder) phases iff the pod requests at least
-       // one ResourceClaim for which the resource driver name in the corresponding
+       // and Bind (if the extender is the binder) phases if and only if the pod requests
+       // at least one ResourceClaim for which the resource driver name in the corresponding
        // ResourceClass is listed here. In addition, the builtin dynamic resources
        // plugin will skip setting SuitableNodes for claims managed by the extender
        // if the extender has a FilterVerb.
@@ -1319,7 +1319,7 @@ downgrade scenarios.
 In addition, kubelet must remove a Pod from ResourceClaim.ReservedFor before
 deleting the Pod. If this was the last Pod on the node that uses the specific
 resource instance, then NodeUnprepareResource (see below) must have been called
-successfully. This ensures that network-attached resource are available again
+successfully. This ensures that a network-attached resource is available again
 for other Pods, including those that might get scheduled to other nodes. It
 also signals that it is safe to deallocate and delete the ResourceClaim.
 
@@ -1345,9 +1345,9 @@ This RPC is called by kubelet when a Pod that wants to use the
 specified resource is scheduled on a node.  The Plugin SHALL assume
 that this RPC will be executed on the node where the resource will be
 used.  ResourceClaim.meta.Namespace, ResourceClaim.meta.UID,
-ResourceClaim.Name, ResourceClaim.meta.Namespace and
-ResourceClaimStatus.AllocationResult should be passed to the Plugin
-as parameters to identify the claim and perform resource preparation.
+ResourceClaim.Name and ResourceClaimStatus.AllocationResult should be
+passed to the Plugin as parameters to identify the claim and perform
+resource preparation.
 
 ResourceClaim parameters(namespace, UUID, name) are useful for debugging
 and enable the resource driver to retrieve the full ResourceClaim object,
@@ -1355,7 +1355,7 @@ should that ever be needed (normally it shouldn't).
 
 The Plugin SHALL return fully qualified device name[s].
 
-The Plugin SHALL ensure that there are json file[s] in CDI format
+The Plugin SHALL ensure that there are JSON file[s] in CDI format
 for the allocated resource. These files SHALL be used by runtime to
 update runtime configuration before creating containers that use the
 resource.
