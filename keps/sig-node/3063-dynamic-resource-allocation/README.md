@@ -1376,6 +1376,11 @@ On a successful call this RPC should return set of fully qualified
 CDI device names, which kubelet MUST pass to the runtime through the CRI
 protocol.
 
+On a Kubelet or node restart, NodePrepareResource must be called to
+ensure resource preparation. For this purpose, NodePrepareResource
+is designed to be idempotent, so Kubelet does not need to track
+or detect whether a resource is prepared.
+
 ```protobuf
 message NodePrepareResourceRequest {
   // The ResourceClaim namespace (ResourceClaim.meta.Namespace).
