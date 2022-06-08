@@ -416,7 +416,7 @@ which references a separate object.  At least apiVersion, name and kind or
 resource must be set. This information is sufficient for generic clients to
 retrieve the parameters. For ResourceClass, that object must be
 cluster-scoped. For ResourceClaim, it must be in the same namespace as the
-ResourceClaim. Which objects a resource driver accepts as parameters depends on
+ResourceClaim and thus the Pod. Which objects a resource driver accepts as parameters depends on
 the driver.
 
 This approach was chosen because then validation of the parameters can be done
@@ -967,7 +967,7 @@ type DriverSchedulingStatus struct {
 	// then excludes nodes by listing those where that is not the case in
 	// UnsuitableNodes.
 	//
-	// Unsuitable nodes will be ignored by the scheduler when selecting a
+	// Nodes listed here will be ignored by the scheduler when selecting a
 	// node for a Pod. All other nodes are potential candidates, either
 	// because no information is available yet or because allocation might
 	// succeed.
@@ -1106,14 +1106,14 @@ communication with a resource driver through the apiserver. The [volume
 binder
 plugin](https://github.com/kubernetes/kubernetes/tree/master/pkg/scheduler/framework/plugins/volumebinding)
 can serve as a reference.
+When this plugin is active, a Pod needs to be retried whenever a ResourceClaim
+gets added or modified.
 
 In addition, kube-scheduler can be configured to contact a resource driver
 directly as a scheduler extender. This can avoid the need to communicate the
 list of potential and unsuitable nodes through the apiserver:
 
 ```
-# to be decided: extend existing versions (like pkg/scheduler/apis/config/v1beta2)
-# or add a new alpha version?
 type Extender struct {
 ...
        // ManagedResourceDrivers is a list of resource driver names that are managed
@@ -1127,7 +1127,9 @@ type Extender struct {
 ```
 
 The existing extender plugin must check this field to decide when to contact
-the extender.
+the extender. It will get added to the most recent scheduler configuration API
+version as a feature-gated field. Not adding it to older versions is meant to
+encourage using the current API version.
 
 The following extension points are implemented in the new plugin:
 
@@ -1170,16 +1172,19 @@ Pod schedulable after allocating the resource elsewhere. Therefore each
 ResourceClaim with delayed allocation is checked whether all of the following
 conditions apply:
 - allocated
-- not currently in use
+- not currently in use (= `ResourceClaimStatus.ReservedFor` empty)
 - it was the reason why some node could not fit the Pod, as recorded earlier in
   Filter
 
 One of the ResourceClaims satisfying these criteria is picked randomly and freeing
-it is requested by setting the Deallocate field. This may make it possible to run the Pod
+it is requested by setting the Deallocate field. The scheduler then needs to wait
+for the resource driver to react to that change and free the resource.
+
+This may make it possible to run the Pod
 elsewhere. If it still doesn't help, deallocation may continue with another
 ResourceClaim, if there is one. To prevent deallocating all resources merely
 because the scheduler happens to check quickly, the next deallocation will only
-requested when there is none currently running.
+requested when there is none currently pending.
 
 At the moment, the scheduler has no information that might enable it to
 prioritize which resource to deallocate first. Future extensions of this KEP
