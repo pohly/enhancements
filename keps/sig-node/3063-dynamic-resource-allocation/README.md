@@ -284,7 +284,7 @@ know that this has succeeded?
     including handling of optional resource requests
 * User-friendly API for describing resource requests
 * Allow resource management cluster add-ons that can be developed and deployed
-  completely free of requiring to re-build any core Kubernetes component
+  without having to re-build or reconfigure core Kubernetes component
   and that are independent of specific container runtimes.
 * Rich enough semantic so that all current device plugins could
   be implemented based on dynamic resource allocation
