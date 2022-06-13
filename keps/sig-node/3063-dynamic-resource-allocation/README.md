@@ -1633,6 +1633,8 @@ For beta:
 
 - Implement integration with Cluster Autoscaler
 - Gather feedback from developers and surveys
+- Positive acknowledgment from 3 would-be implementors of a resource driver,
+  from a diversity of companies or projects
 - Tests are in Testgrid and linked in KEP
 - In addition to the basic features, we also handle:
   - reuse of network-attached resources after unexpected node shutdown
