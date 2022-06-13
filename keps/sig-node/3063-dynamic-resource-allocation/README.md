@@ -1054,8 +1054,12 @@ communication with a resource driver through the apiserver. The [volume
 binder
 plugin](https://github.com/kubernetes/kubernetes/tree/master/pkg/scheduler/framework/plugins/volumebinding)
 can serve as a reference.
-When this plugin is active, a Pod needs to be retried whenever a ResourceClaim
-gets added or modified.
+
+Scheduling of a pod using a ResourceClaim may have to wait for a resource
+driver to do something, typically allocating the resource. When the scheduler
+notices this, the current scheduling attempt for the pod must stop and the pod
+needs to be put back into the work queue. It then gets retried whenever a
+ResourceClaim gets added or modified.
 
 In addition, kube-scheduler can be configured to contact a resource driver
 directly as a scheduler extender. This can avoid the need to communicate the
