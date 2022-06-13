@@ -645,8 +645,63 @@ How will UX be reviewed, and by whom?
 Consider including folks who also work outside the SIG or subproject.
 -->
 
-TODO
+In a cluster where the feature is not used (no resource driver installed, no
+pods using dynamic resource allocation) the impact is minimal, both for
+performance and security. Kubelet only has permission to update a ResourceClaim
+status, but it cannot create new ResourceClaim objects. The scheduler plugin
+and resource controller will return quickly without doing any work for pods.
 
+When there are ResourceClaims in the cluster, a compromised kubelet has
+permission to update the status of all of them, whether the ResourceClaim is
+currently in use on the node or not. This could be used for a denial-of-service
+attack against pods using those ResourceClaims, for example by overwriting
+their allocation result with a node selector that matches no node. A
+denial-of-service attack against the cluster and other pods is harder, but
+still possible. For example, frequently updating ResourceClaims could cause new
+scheduling attempts for pending pods. Filling up the `ReservedFor` field
+could exhaust etcd storage.
+
+To mitigate these risks, kubelet's permissions for ResourceClaims could be
+reduced to read-only. In that case, pods would remain in the `ReservedFor`
+field even after they are deleted and the resource controller would need to
+garbage-collect these stale entries before resources can be deleted or reused.
+
+Alternatively, special permissions checks could be added in the API server to
+limit the kind of status updates allowed for kubelet: it should only be allowed
+to remove pods from `ReservedFor`, and only for pods which are assigned to the
+node.
+
+Another potential attack goal is to get pods with sensitive workloads to run on
+a compromised node. For pods that don't use special resources nothing changes
+in that regard. Such an attack is possible for pods with extended resources
+because kubelet is in control of which capacity it reports for those: it could
+publish much higher values than the device plugin reported and thus attract
+pods to the node that normally would run elsewhere. With dynamic resource
+allocation, such an attack is still possible, but the attack code would have to
+be different for each resource driver because all of them will use their own,
+custom approach for reporting resource availability.
+
+The security of those custom approaches is the responsibility of the resource
+driver vendor. Solutions like Akri which establish their own control plane and
+then communicate with Kubernetes through the device plugin API already need to
+address this.
+
+Aside from security implications, usability and usefulness of dynamic resource
+allocation also may turn out to be insufficient. Some risks are:
+
+- Slower pod scheduling due to the interaction with resource drivers.
+
+- Additional complexity when describing pod requirements because
+  separate objects must be created for the parameters.
+
+- Network-attached resources may have additional constraints that are not
+  captured yet (like limited number of nodes that they can be attached to).
+
+- Cluster autoscaling will not work as expected unless the autoscaler and
+  resource drivers get extended to support it.
+
+All of these risks will have to be evaluated by gathering feedback from users
+and resource driver developers.
 
 ## Design Details
 
