@@ -518,13 +518,9 @@ while <pod needs to be scheduled> {
 The resources allocated for a ResourceClaim can be shared by multiple
 containers in a pod. Depending on the capabilities defined in the
 ResourceClaim by the driver, a ResourceClaim can be used exclusively
-by one pod at a time, by a certain maximum number of pods, or an
-unlimited number of pods. Kubernetes can only count, but not do more
-than that because it has no understanding of what other limitations might
-apply to specific resources. In practice, one or unlimited are
-expected to be the common cases. A fixed number is supported by the API
-because it is easy to implement and might be
-useful.
+by one pod at a time or an unlimited number of pods. Support for additional
+constraints (maximum number of pods, maximum number of nodes) could be
+added once there are use cases for those.
 
 Users of a ResourceClaim don't need to be Pods. This KEP specifically supports
 Pods as users and describes how kube-scheduler and kubelet will deal with Pods
@@ -1004,11 +1000,9 @@ type AllocationResult struct {
 	// everywhere.
 	AvailableOnNodes *core.NodeSelector
 
-	// UserLimit determines how many entities are allowed to use this
-	// resource at the same time. The default is 1. -1 enables the usage by
-	// an unlimited number of users. Individual containers in a pod are not
-	// counted as users, only the Pod is.
-	UserLimit int
+    // SharedResource determines whether the resource supports more
+    // than one user at a time.
+    SharedResource bool
 }
 
 type PodSpec {

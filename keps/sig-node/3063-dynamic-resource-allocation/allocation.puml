@@ -6,7 +6,7 @@
 
 ==B1== -->[= __immediate allocation__] "ResourceClaim\lfor immediate allocation with\l* phase=pending\l* plugin name set\l* without deletion timestamp"
   -->[ **resource driver**\l updates claim\l to prevent deletion] "ResourceClaim\lfor immediate allocation\lwith finalizer"
-  -->[ **resource driver**\l finishes allocation] "ResourceClaim with\l* phase=allocated\n* Attributes and UserLimit set" as ALLOCATED
+  -->[ **resource driver**\l finishes allocation] "ResourceClaim with\l* phase=allocated\n* allocation attributes set" as ALLOCATED
 
 
 ==B1== -->[= __delayed allocation__] "ResourceClaim\lfor delayed allocation with\l* phase=pending\l* plugin name set\l* without deletion timestamp"
