@@ -170,25 +170,6 @@ Items marked with (R) are required *prior to targeting to a milestone / release*
 
 ## Summary
 
-<!--
-This section is incredibly important for producing high-quality, user-focused
-documentation such as release notes or a development roadmap. It should be
-possible to collect this information before implementation begins, in order to
-avoid requiring implementors to split their attention between writing release
-notes and implementing the feature itself. KEP editors and SIG Docs
-should help to ensure that the tone and content of the `Summary` section is
-useful for a wide audience.
-
-A good summary is probably at least a paragraph in length.
-
-Both in this section and below, follow the guidelines of the [documentation
-style guide]. In particular, wrap lines to a reasonable length, to make it
-easier for reviewers to cite specific portions, and to minimize diff churn on
-updates.
-
-[documentation style guide]: https://github.com/kubernetes/community/blob/master/contributors/guide/style-guide.md
--->
-
 Users are increasingly deploying Kubernetes as management solution for new
 workloads (batch processing) and in new environments (edge computing). Such
 workloads no longer need just RAM and CPU, but also access to specialized
@@ -223,15 +204,6 @@ between the add-ons which own resources (CSI driver, resource driver) and the
 resources owned and assigned by the scheduler (RAM/CPU, extended resources).
 
 ## Motivation
-
-<!--
-This section is for explicitly listing the motivation, goals, and non-goals of
-this KEP.  Describe why the change is important and the benefits to users. The
-motivation section can optionally provide links to [experience reports] to
-demonstrate the interest in a KEP within the wider Kubernetes community.
-
-[experience reports]: https://github.com/golang/go/wiki/ExperienceReports
--->
 
 Originally, Kubernetes and its scheduler only tracked CPU and RAM as
 resources for containers. Later, support for storage and discrete,
@@ -286,7 +258,12 @@ limitations of the current approach for the following use cases:
   like to utilize devices available over the Fabric (network, special
   links, etc).
 
-  *Limitation*: Device Plugins framework supports only local devices.
+  *Limitation*: The device plugin API is designed for node-local resources that
+  get discovered by a plugin running on the node. Projects like
+  [Akri](https://www.cncf.io/projects/akri/) have to work around that by
+  reporting the same network-attached resource on all nodes that it could
+  get attached to and then updating resource availability on all of those
+  nodes when resources get used.
 
 Several other limitations are addressed by
 [CDI](https://github.com/container-orchestrated-devices/container-device-interface/).
@@ -309,20 +286,17 @@ know that this has succeeded?
 * Allow resource management cluster add-ons that can be developed and deployed
   completely free of requiring to re-build any core Kubernetes component
   and that are independent of specific container runtimes.
+* Rich enough semantic so that all current device plugins could
+  be implemented based on dynamic resource allocation
 
 ### Non-Goals
 
-<!--
-What is out of scope for this KEP? Listing non-goals helps to focus discussion
-and make progress.
--->
-
-* Replace the device manager API. For resources that fit into its model
+* Replace the device plugin API. For resources that fit into its model
   of a single, linear quantity it is a good solution. Other resources
   should use dynamic resource allocation. Both are expected to co-exist, with vendors
   choosing the API that better suits their needs on a case-by-case
   basis. Because the new API is going to be implemented independently of the
-  existing device manager, there's little risk of breaking stable APIs.
+  existing device plugin support, there's little risk of breaking stable APIs.
 
 * Extend the model that kube-scheduler has about
   resources. Instead, it will need information from the resource driver for
@@ -354,15 +328,6 @@ and make progress.
 
 ## Proposal
 
-<!--
-This is where we get down to the specifics of what the proposal actually is.
-This should have enough detail that reviewers can understand exactly what
-you're proposing, but should not include things like API designs or
-implementation. What is the desired outcome and how do we measure success?.
-The "Design Details" section below is for the real
-nitty-gritty.
--->
-
 The proposal is that a resource driver handles all operations that are specific
 to the resources managed by that driver. This includes operations at
 the control plane level (tracking where in the cluster resources are
@@ -387,8 +352,7 @@ Two new API object types get added in a new API group:
 
   For example, a single resource driver might manage different kinds of
   FPGAs. For each kind, one ResourceClass could define the kind and provide paths
-  to kind-specific tools or URLs for additional resources. Only a handful of
-  ResourceClasses are expected per resource driver.
+  to kind-specific tools or URLs for additional resources.
 
 - ResourceClaim, namespaced, with parameters provided by a normal user
   that describes a resource instance that needs to be allocated. A
@@ -504,7 +468,10 @@ while <pod needs to be scheduled> {
   <choose a node, considering potential availability for those resources
    which are not allocated yet and the hard constraints for those which are>
   if <no node fits the pod> {
-    if <at least one resource is allocated, unused and was not available on a node> {
+    if <at least one resource
+            is allocated and unused,
+            uses delayed allocation, and
+            was not available on a node> {
       <randomly pick one of those resources and tell resource driver to free it>
     }
   } else if <all resources allocated> {
@@ -564,7 +531,8 @@ initCommand:
 - --cluster
 - my-cluster
 ---
-apiVersion: cdi.k8s.io/v1alpha1
+apiVersion: core.k8s.io/v1alpha1
+kind: ResourceClass
 metadata:
   name: acme-gpu
 driverName: gpu.acme.com
@@ -632,7 +600,9 @@ spec:
 
 This request triggers resource allocation on a node that has a GPU device with
 2Gi of memory available and then the Pod runs on that node. The remaining
-capacity of the GPU can be used by other pods. The lifecycle of the resource
+capacity of the GPU may be usable for other pods, with constrains like alignment
+to segment sizes ensured by the resource driver.
+The lifecycle of the resource
 allocation is tied to the lifecycle of the Pod.
 
 In production, a similar PodTemplateSpec in a Deployment will be used.
@@ -647,13 +617,6 @@ has parameters for setting up all of these hardware functions together as
 needed for a data flow pipeline.
 
 ### Notes/Constraints/Caveats (Optional)
-
-<!--
-What are the caveats to the proposal?
-What are some important details that didn't come across above?
-Go in to as much detail as necessary here.
-This might be a good place to talk about core concepts and how they relate.
--->
 
 Scheduling is likely to be slower when many Pods request the new
 resource types, both because scheduling such a Pod involves more
@@ -682,14 +645,11 @@ How will UX be reviewed, and by whom?
 Consider including folks who also work outside the SIG or subproject.
 -->
 
+TODO
+
+
 ## Design Details
 
-<!--
-This section should contain enough information that the specifics of your
-change are understandable. This may include API specs (though not always
-required) or even code snippets. If there's any ambiguity about HOW your
-proposal will be implemented, this is the place to discuss them.
--->
 
 ### Implementation
 
@@ -711,7 +671,9 @@ Several components must be implemented or modified in Kubernetes:
 For a resource driver the following components are needed:
 - *Resource driver controller*: a central component which handles resource allocation
   by watching ResourceClaims and updating their status once it is done with
-  allocation.
+  allocation. It may run inside the cluster or outside of it. The only
+  hard requirement is that it can connect to the API server. Optionally,
+  it may also be configured as a [special scheduler extender](#kube-scheduler).
 - *Resource kubelet plugin*: a component which cooperates with kubelet to prepare
   the usage of the resource on a node.
 
@@ -740,15 +702,16 @@ ResourceClaim doesn't get deleted.
 
 ### API
 
-ResourceClaim and ResourceClass are new built-in types in a new
-`cdi.k8s.io/v1alpha1` API group. This was chosen instead of using CRDs because
-core Kubernetes components must interact with them and installation of CRDs as
-part of cluster creation is an unsolved problem.
-
 The PodSpec gets extended. Types and structs referenced from PodSpec
-(ResourceClaimTemplate, ResourceClaimSpec) must be placed in `core.k8s.io/v1`
-to avoid a cyclic dependency because `cdi.k8s.io/v1alpha1` depends on
-NodeSelector from the core API.
+(ResourceClaimTemplate, ResourceClaimSpec) must be placed in all versions
+of `core.k8s.io` to keep those packages self-contained.
+
+ResourceClaim and ResourceClass are new built-in types in the
+`core.k8s.io/v1alpha1` API group. This was chosen instead of using CRDs because
+core Kubernetes components must interact with them and installation of CRDs as
+part of cluster creation is an unsolved problem. They could be defined
+in some other API group (`node.k8s.io`, some new group) but having everything
+in the same group is less confusing for users.
 
 Secrets are not part of this API: if a resource driver needs secrets, for
 example to access its own backplane, then it can define custom parameters for
@@ -777,12 +740,8 @@ type ResourceClass struct {
 	// those stored in ResourceClaimSpec. These parameters here can only be
 	// set by cluster administrators.
 	//
-	// The object must be cluster-scoped, so the namespace must be empty.
-	// ApiVersion and name must be set. Kind and/or resource must be set.
-	// Usually, kind is sufficient because there will be a 1:1 mapping
-	// to resource. If UID is set, then only that specific object
-	// may be used.
-	Parameters v1.ObjectReference
+	// The object must be cluster-scoped.
+	Parameters TypedLocalObjectReference
 }
 
 // ResourceClaim is created by users to describe which resources they need.
@@ -825,12 +784,7 @@ type ResourceClaimSpec struct {
 	// driver when allocating a resource for the claim.
 	//
 	// The object must be in the same namespace as the ResourceClaim.
-	// An empty namespace field defaults to that namespace.
-	// ApiVersion and name must be set. Kind and/or resource must be set.
-	// Usually, kind is sufficient because there will be a 1:1 mapping
-	// to resource. If UID is set, then only that specific object
-	// may be used.
-	Parameters v1.ObjectReference
+	Parameters TypedLocalObjectReference
 
 	// Allocation can start immediately or when a Pod wants to use the
 	// resource. Waiting for a Pod is the default.
@@ -1951,7 +1905,7 @@ becomes more complex because of these new use cases.
 
 ### Extend Device Plugins
 
-The Device Plugins API could be extended to implement some of the
+The device plugins API could be extended to implement some of the
 requirements mentioned in the “Motivation” section of this
 document. There were certain attempts to do it, for example an attempt
 to [add ‘Deallocate’ API call](https://github.com/kubernetes/enhancements/pull/1949) and [pass pod annotations to 'Allocate' API call](https://github.com/kubernetes/kubernetes/pull/61775)
@@ -1962,14 +1916,14 @@ Device Plugins API. For example: partial and optional resource
 allocation couldn’t be done without changing the way resources are
 currently declared on the Pod and Device Plugin level.
 
-Extending the Device Plugins API to use [Container Device Interface](https://github.com/container-orchestrated-devices/container-device-interface)
+Extending the device plugins API to use [Container Device Interface](https://github.com/container-orchestrated-devices/container-device-interface)
 would help address some of the requirements, but not all of them.
 
 NodePrepareResource and NodeUnprepareResource could be added to the Device Plugins API and only get called for
 resource claims.
 
 However, this would mean that
-developers of the Device Plugins would have to implement mandatory
+developers of the device plugins would have to implement mandatory
 API calls (ListAndWatch, Allocate), which could create confusion
 as those calls are meaningless for the Dynamic Resource Allocation
 purposes.
@@ -1978,7 +1932,7 @@ Even worse, existing device plugins would have to implement the new
 calls with stubs that return errors because the generated Go interface
 will require them.
 
-It should be also taken into account that Device Plugins API is
+It should be also taken into account that device plugins API is
 beta. Introducing incompatible changes to it may not be accepted by
 the Kubernetes community.
 
