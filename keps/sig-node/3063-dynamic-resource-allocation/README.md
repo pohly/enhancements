@@ -1380,13 +1380,13 @@ protocol.
 message NodePrepareResourceRequest {
   // The ResourceClaim namespace (ResourceClaim.meta.Namespace).
   // This field is REQUIRED.
-  namespace string = 1
+  string namespace = 1;
   // The UID of the Resource claim (ResourceClaim.meta.UUID).
   // This field is REQUIRED.
   string claim_uid = 2;
   // The name of the Resource claim (ResourceClaim.meta.Name)
   // This field is REQUIRED.
-  string claim_name = 3
+  string claim_name = 3;
   // Allocation attributes (AllocationResult.Attributes)
   // This field is REQUIRED.
   map<string, string> attributes = 4;
@@ -1447,16 +1447,16 @@ not know if it failed or not, it can choose to call
 message NodeUnprepareResourceRequest {
   // The ResourceClaim namespace (ResourceClaim.meta.Namespace).
   // This field is REQUIRED.
-  namespace string = 1
+  string namespace = 1;
   // The UID of the Resource claim (ResourceClaim.meta.UUID).
   // This field is REQUIRED.
   string claim_uid = 2;
   // The name of the Resource claim (ResourceClaim.meta.Name)
   // This field is REQUIRED.
-  string claim_name = 3
+  string claim_name = 3;
   // List of fully qualified CDI device names
   // Kubelet plugin returns them in the NodePrepareResourceResponse
-  repeated string cdi_device = 2;
+  repeated string cdi_device = 4;
 }
 
 message NodeUnprepareResourceResponse {
