@@ -1270,7 +1270,7 @@ allocation, then deallocating one or more of these ResourceClaims may make the
 Pod schedulable after allocating the resource elsewhere. Therefore each
 ResourceClaim with delayed allocation is checked whether all of the following
 conditions apply:
-- allocated
+- allocated (= `ResourceClaimStatus.Allocation` non-nil)
 - not currently in use (= `ResourceClaimStatus.ReservedFor` empty)
 - it was the reason why some node could not fit the Pod, as recorded earlier in
   Filter
