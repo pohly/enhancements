@@ -773,15 +773,20 @@ ResourceClaim doesn't get deleted.
 ### API
 
 The PodSpec gets extended. Types and structs referenced from PodSpec
-(ResourceClaimTemplate, ResourceClaimSpec) must be placed in all versions
-of `core.k8s.io` to keep those packages self-contained.
+(ResourceClaimTemplate, ResourceClaimSpec) must be placed in `core.k8s.io/v1`
+to keep that package self-contained. The new fields in the PodSpec are gated by
+the DynamicResourceAllocation feature gate and can only be set when it is
+enabled. Initially, they are declared as alpha and then can still be changed
+from one release to the next.
 
-ResourceClaim and ResourceClass are new built-in types in the
-`core.k8s.io/v1alpha1` API group. This was chosen instead of using CRDs because
-core Kubernetes components must interact with them and installation of CRDs as
-part of cluster creation is an unsolved problem. They could be defined
-in some other API group (`node.k8s.io`, some new group) but having everything
-in the same group is less confusing for users.
+ResourceClaim and ResourceClass are new built-in types in `core.k8s.io/v1`.
+They only get registered when the feature gate is enabled.
+
+Putting everything into `core.k8s.io/v1` was chosen instead of using CRDs
+because core Kubernetes components must interact with the new objects and
+installation of CRDs as part of cluster creation is an unsolved problem. They
+could be defined in some other API group (`node.k8s.io`, some new group) but
+having everything in the same group is less confusing for users.
 
 Secrets are not part of this API: if a resource driver needs secrets, for
 example to access its own backplane, then it can define custom parameters for
