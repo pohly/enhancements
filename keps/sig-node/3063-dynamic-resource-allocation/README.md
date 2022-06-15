@@ -586,6 +586,31 @@ pre-provisioning internally. Kubernetes wouldn't know how to match
 pre-provisioned resources against claims because it has no understanding about the
 parameters.
 
+Some of the race conditions that need to be handled are:
+
+- A ResourceClaim gets created and deleted again while the resource driver
+  starts allocating it. Before it actually starts doing anything, the
+  driver adds a finalizer. Either adding the finalizer or removing the
+  ResourceClaim win. If the driver wins, it continues with allocation
+  and can either complete or abort the operation when it notices the non-nil
+  DeletionTimestamp. Otherwise, allocation gets aborted immediately.
+
+  What this avoids is the situation where an allocation succeed without having
+  an object where the result can be stored. The driver can also be killed at
+  any time: when it restarts, the finalizer indicates that allocation may be in
+  progress and has to be completed or aborted.
+
+- In a cluster with multiple scheduler instances, two pods might get
+  scheduled concurrently by different schedulers. When they reference
+  the same ResourceClaim which may only get used by one pod at a time,
+  only one pod can be scheduled.
+
+  Both schedulers try to add their pod to the `ReservedFor` field, but only the
+  update that reaches the API server first gets stored. The other one fails
+  with a conflict error and the scheduler which issued it knows that it must
+  put the pod back into the queue, waiting for the ResourceClaim to become
+  usable again.
+
 ### Custom parameters
 
 To support arbitrarily complex parameters, both ResourceClass and ResourceClaim
