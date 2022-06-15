@@ -1,4 +1,4 @@
-IMAGES += components.png allocation.png kubelet.png
+IMAGES += components.png kubelet.png
 
 all: $(IMAGES)
 clean:

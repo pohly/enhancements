@@ -775,25 +775,61 @@ An utility library for resource drivers will be developed outside of Kubernetes
 and does not have to be used by drivers, therefore it is not described further
 in this KEP.
 
-### Resource allocation flow
+### Resource allocation and usage flow
 
-The following diagram shows how resource allocation works for a resource that
-gets defined inline in a Pod. For a full definition of ResourceClass,
-ResourceClaim and ResourceClaimTemplate see the [API](#API) section below.
+The following steps shows how resource allocation works for a resource that
+gets defined inline in a Pod. Several of these steps may fail without changing
+the system state. They then must be retried until they succeed or something
+else changes in the system, like for example deleting objects.
 
-Several of these operations may fail without changing the system state. They
-then must be retried until they succeed or something else changes in the
-system, like for example deleting objects. These additional state transitions
-are not shown for the sake of simplicity.
-
-![allocation](./allocation.png)
+* **user** creates Pod with inline ResourceClaimTemplate
+* **resource claim controller** checks ResourceClaimTemplate and ResourceClass,
+  then creates ResourceClaim with Pod as owner
+* if *immediate allocation*:
+  * **resource driver** adds finalizer to claim to prevent deletion -> allocation in progress
+  * **resource driver** finishes allocation, sets `Allocation` -> claim ready for use by any pod
+* if *pod is pending*:
+  * **scheduler** filters nodes
+  * if *delayed allocation and resource not allocated yet*:
+    * if *at least one node fits pod*:
+      * **scheduler** picks one node, sets `SuitableNodes`, `SelectedNode` and `SelectedUser`
+      * if *resource is available for `SelectedNode`*:
+        * **resource driver** adds finalizer to claim to prevent deletion -> allocation in progress
+        * **resource driver** finishes allocation, sets `Allocation` and the
+          intended user in `ReservedFor` -> claim ready for use and reserved
+          for the pod
+      * else *scheduler needs to know that it must avoid this and possibly other nodes*:
+        * **resource driver** sets `UnsuitableNodes` -> next attempt by scheduler has more information and is more likely to succeed
+    * else *pod cannot be scheduled*:
+      * **scheduler** may trigger freeing some claim (see [pseudo-code above](#coordinating-resource-allocation-through-the-scheduler)) or wait
+  * if *pod not listed in `ReservedFor` yet* (can occur for immediate allocation):
+    * **scheduler** adds it to `ReservedFor`
+  * if *resource allocated and reserved*:
+    * **scheduler** sets node in Pod spec -> Pod ready to run
+* if *node is set for pod*:
+  * if `resource not reserved for pod` (user might have set the node field):
+    * **kubelet** refuses to start the pod -> permanent failure
+  * else `pod may run`:
+    * **kubelet** asks driver to prepare the resource
+  * if `resource is prepared`:
+    * **kubelet** creates container(s) which reference(s) the resource through CDI -> Pod is running
+* if *pod has terminated* and *pod deleted*:
+  * **kubelet** asks driver to unprepare the resource
+  * **kubelet** removes pod from `ReservedFor`
+  * **kubelet** allows pod deletion to complete by clearing the `GracePeriod`
+* if *pod removed*:
+  * **garbage collector** deletes ResourceClaim -> adds `DeletionTimestamp` because of finalizer
+* if *ResourceClaim has `DeletionTimestamp`*:
+  * **resource driver** frees resources
+  * **resource driver** clears finalizer and `Allocation`
+  * **API server** removes ResourceClaim
 
 The flow is similar for a ResourceClaim that gets created as a stand-alone
 object by the user. In that case, the Pod reference that ResourceClaim by
 name. The ResourceClaim does not get deleted at the end and can be reused by
 another Pod and/or used by multiple different Pods at the same time (if
 supported by the driver). The resource remains allocated as long as the
-ResourceClaim doesn't get deleted.
+ResourceClaim doesn't get deleted by the user.
 
 ### API
 
@@ -991,6 +1027,17 @@ type SchedulerSchedulingStatus struct {
 	// fieldSelector.
 	SelectedNode string
 
+	// SelectedUser may be set by the scheduler together with SelectedNode
+	// to the Pod that it is scheduling. The resource driver then may set
+	// both the Allocation and the ReservedFor field when it is done with
+	// a successful allocation.
+	//
+	// This is an optional optimization that saves one API server call
+	// and one pod scheduling attempt in the scheduler because the resource
+	// will be ready for use by the Pod the next time that the scheduler
+	// tries to schedule it.
+	SelectedUser *metav1.OwnerReference
+
 	// When allocation is delayed, and the scheduler needs to
 	// decide on which node a Pod should run, it will
 	// ask the driver on which nodes the resource might be
@@ -1054,9 +1101,9 @@ type AllocationResult struct {
 	// everywhere.
 	AvailableOnNodes *core.NodeSelector
 
-    // SharedResource determines whether the resource supports more
-    // than one user at a time.
-    SharedResource bool
+	// SharedResource determines whether the resource supports more
+	// than one user at a time.
+	SharedResource bool
 }
 
 type PodSpec {
