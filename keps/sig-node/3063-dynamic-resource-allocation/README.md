@@ -335,165 +335,15 @@ available, helping with pod scheduling decisions, allocating resources
 when requested) as well as the node level (preparing container
 startup). Such a driver can be implemented in arbitrary programming
 languages as long as it supports the resource allocation protocol and
-gRPC interfaces defined in this KEP. A utility package with Go
-support code will be made available to simplify the development of
-such a driver, but using it will not be required and its API is not
-part of this KEP.
+gRPC interfaces defined in this KEP. Deploying it will not depend on
+reconfiguring core Kubernetes components like the scheduler.
 
-Two new API object types get added in a new API group:
-- ResourceClass, not namespaced, with the name of a resource driver and
-  parameters for the resource driver that will be used for all ResourceClaims
-  that reference this ResourceClass. These parameters might describe the kind
-  of resource that are allocated when using the ResourceClass or control
-  cluster-specific options. Because only cluster administrators are allowed to
-  create ResourceClasses and they will be passed separately to the resource
-  driver, they can be used for options that normal users should not be allowed
-  to control.
-
-  For example, a single resource driver might manage different kinds of
-  FPGAs. For each kind, one ResourceClass could define the kind and provide paths
-  to kind-specific tools or URLs for additional resources.
-
-- ResourceClaim, namespaced, with parameters provided by a normal user
-  that describes a resource instance that needs to be allocated. A
-  ResourceClaim contains the usual metadata, a spec and a status. The
-  spec identifies the driver that handles the resource via a class
-  name.
-
-A third one with information about the driver ("ResourceDriver", similar to the
-"CSIDriver" from storage) could get added in the future. At the moment it is
-not needed yet.
-
-The ResourceClaim spec is immutable. The ResourceClaim
-status is reserved for system usage and holds the current state of the
-resource. The status must not get lost, which in the past was not ruled
-out. For example, status could have been stored in a separate etcd instance
-with lower reliability. To recover after a loss, status was meant to be recoverable.
-A [recent KEP](https://github.com/kubernetes/enhancements/tree/master/keps/sig-architecture/2527-clarify-status-observations-vs-rbac)
-clarified that status will always be stored reliably and can be used as
-proposed in this KEP.
-
-To support arbitrarily complex parameters, both ResourceClass and ResourceClaim
-contain one field of type
-[v1.ObjectReference](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.23/#objectreference-v1-core)
-which references a separate object.  At least apiVersion, name and kind or
-resource must be set. This information is sufficient for generic clients to
-retrieve the parameters. For ResourceClass, that object must be
-cluster-scoped. For ResourceClaim, it must be in the same namespace as the
-ResourceClaim and thus the Pod. Which objects a resource driver accepts as parameters depends on
-the driver.
-
-This approach was chosen because then validation of the parameters can be done
-with a CRD and that validation will work regardless of where the parameters
-are needed.
-
-A resource driver may support modification of the parameters while a resource
-is in use ("online resizing"). It may update the ResourceClaim status to
-reflect the modified state, for example by increasing the number of concurrent
-users. However, the state must not be modified such that a user of the resource
-no longer has access.
-
-Parameters may get deleted before the ResourceClaim or ResourceClass that
-references them. In that case, a pending resource cannot be allocated until the
-parameters get recreated. An allocated resource must remain usable and freeing
-it must be possible. To support this, resource drivers must copy all relevant
-information into the ResourceClaim status when allocating it.
-
-Kube-scheduler
-and resource driver communicate by modifying that status. The status is also
-how Kubernetes tracks that a driver has allocated the resource and on
-which nodes the resource is available.
-
-This approach is an intentional simplification compared to the
-PersistentVolume/PersistentVolumeClaim model for volumes where the additional
-PV object was used to capture status. That model allowed operations like
-pre-provisioning volumes and then having Kubernetes bind those to claims that
-get created later. For resources, the resource driver can and must handle such
-pre-provisioning internally. Kubernetes wouldn't know how to match
-pre-provisioned resources against claims because it has no understanding about the
-parameters.
-
-Allocation of a resource happens either immediately when a ResourceClaim gets
-created (“immediate allocation”) or when a Pod is getting scheduled which
-needs the resource (“delayed allocation”),
-depending on a flag in the ResourceClaim spec. Pods reference resource
-claims in a new PodSpec.Resources list. Each resource in that list
-can then be made available to one or more containers in that Pod.
-
-Immediate allocation is useful when allocating a resource is expensive (for
-example, programming an FPGA) and the resource therefore is meant to be used by
-multiple different Pods, either in parallel or one after the other. The
-downside is that Pod resource requirements cannot be considered when choosing
-where to allocate. If a resource was allocated so that it is only available on
-one node and the Pod cannot run there because other resources like RAM or CPU
-are exhausted on that node, then the Pod cannot run elsewhere. The same applies
-to resources that are available on a certain subset of the nodes and those
-nodes are busy.
-
-Delayed allocation solves this by integrating allocation with Pod scheduling:
-an attempt to schedule a Pod triggers allocation of pending resources for nodes
-that the scheduler has deemed suitable. Scheduling the pod is then put on hold
-until all resources are allocated. This avoids scenarios where a Pod is
-permanently assigned to a node which can't fit the pod because of the pod's
-other resource requirements.
-
-When a PodTemplateSpec in an app controller spec references a ResourceClaim by
-name, all Pods created by that controller also use that name and thus share the
-resources allocated for that ResourceClaim. This might be supported by the
-resource driver and can be useful, depending on the characteristics of the
-resource.
-
-But often, each Pod is meant to have exclusive access to its own ResourceClaim
-instance instead. To support such ephemeral resources without having to modify
-all controllers that create Pods, an entry in the new PodSpec.Resources list
-can also be a ResourceClaimTemplate. When a Pod gets created, such a template
-will be used to create a normal ResourceClaim with the Pod as owner, and then
-the normal allocation of the resource takes place.
-
-For immediate allocation, scheduling Pods is simple because the
-resource is already allocated and determines the nodes on which the
-Pod may run. For delayed allocation, a node is selected tentatively
-and driver(s) try to allocate their resources for that node. If that
-succeeds, the Pod can get scheduled. If it fails, the scheduler must
-determine whether some other node fits the requirements and if so,
-request allocation again. If no node fits because some resources were
-already allocated for a node and are only usable there, then those
-resources must be released and then get allocated elsewhere.
-
-This is a summary of the necessary [kube-scheduler changes](#kube-scheduler) in
-pseudo-code:
-
-```
-while <pod needs to be scheduled> {
-  <choose a node, considering potential availability for those resources
-   which are not allocated yet and the hard constraints for those which are>
-  if <no node fits the pod> {
-    if <at least one resource
-            is allocated and unused,
-            uses delayed allocation, and
-            was not available on a node> {
-      <randomly pick one of those resources and tell resource driver to free it>
-    }
-  } else if <all resources allocated> {
-    <schedule pod onto node>
-  } else if <some unallocated resource uses delayed allocation> {
-    <tell resource driver to allocate for the chosen node>
-  }
-}
-```
-
-The resources allocated for a ResourceClaim can be shared by multiple
-containers in a pod. Depending on the capabilities defined in the
-ResourceClaim by the driver, a ResourceClaim can be used exclusively
-by one pod at a time or an unlimited number of pods. Support for additional
-constraints (maximum number of pods, maximum number of nodes) could be
-added once there are use cases for those.
-
-Users of a ResourceClaim don't need to be Pods. This KEP specifically supports
-Pods as users and describes how kube-scheduler and kubelet will deal with Pods
-that depend on a ResourceClaim, but the API and some custom resource driver
-might also be useful for controllers to manage resources without using those
-resources for Pods.
+New API objects define parameters for a resource request ("ResourceClaim" in
+the API) and track the state of such a request. The pod spec gets extended to
+reference one or more resource requests. A pod only gets scheduled onto a node
+when all of its requests are reserved for the pod and available on the
+node. This prevents scheduling a pod that then gets stuck on a node while
+waiting for resources to become available.
 
 ### User Stories
 
@@ -705,6 +555,170 @@ and resource driver developers.
 
 ## Design Details
 
+### State and communication
+
+A ResourceClaim object defines what kind of resource is needed and what
+the parameters for it are. It is owned by users and namespaced. Additional
+parameters are provided by a cluster admin in ResourceClass objects.
+
+The ResourceClaim spec is immutable. The ResourceClaim
+status is reserved for system usage and holds the current state of the
+resource. The status must not get lost, which in the past was not ruled
+out. For example, status could have been stored in a separate etcd instance
+with lower reliability. To recover after a loss, status was meant to be recoverable.
+A [recent KEP](https://github.com/kubernetes/enhancements/tree/master/keps/sig-architecture/2527-clarify-status-observations-vs-rbac)
+clarified that status will always be stored reliably and can be used as
+proposed in this KEP.
+
+The different components communicate with each other by updating fields in the
+status. This has two advantages:
+- Changes for a resource are atomic, which avoids race conditions.
+- The only requirement for deployments is that the components can connect to
+  the API server. Direct communication is not needed, but in some cases
+  can be optionally used to improve performance.
+
+Using a single object is an intentional simplification compared to the
+PersistentVolume/PersistentVolumeClaim model for volumes where the additional
+PV object was used to capture status. That model allowed operations like
+pre-provisioning volumes and then having Kubernetes bind those to claims that
+get created later. For resources, the resource driver can and must handle such
+pre-provisioning internally. Kubernetes wouldn't know how to match
+pre-provisioned resources against claims because it has no understanding about the
+parameters.
+
+### Custom parameters
+
+To support arbitrarily complex parameters, both ResourceClass and ResourceClaim
+contain one field of type
+[v1.TypedLocalObjectReference](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.23/#typedlocalobjectreference-v1-core)
+which references a separate object. This information is sufficient for generic clients to
+retrieve the parameters. For ResourceClass, that object must be
+cluster-scoped. For ResourceClaim, it must be in the same namespace as the
+ResourceClaim and thus the Pod. Which objects a resource driver accepts as parameters depends on
+the driver.
+
+This approach was chosen because then validation of the parameters can be done
+with a CRD and that validation will work regardless of where the parameters
+are needed.
+
+A resource driver may support modification of the parameters while a resource
+is in use ("online resizing"). It may update the ResourceClaim status to
+reflect the modified state, for example by increasing the number of concurrent
+users. However, the state must not be modified such that a user of the resource
+no longer has access.
+
+Parameters may get deleted before the ResourceClaim or ResourceClass that
+references them. In that case, a pending resource cannot be allocated until the
+parameters get recreated. An allocated resource must remain usable and freeing
+it must be possible. To support this, resource drivers must copy all relevant
+information into the ResourceClaim status when allocating it.
+
+### Allocation modes
+
+Allocation of a resource happens either immediately when a ResourceClaim gets
+created (“immediate allocation”) or when a Pod is getting scheduled which
+needs the resource (“delayed allocation”),
+depending on a flag in the ResourceClaim spec.
+
+Immediate allocation is useful when allocating a resource is expensive (for
+example, programming an FPGA) and the resource therefore is meant to be used by
+multiple different Pods, either in parallel or one after the other. The
+downside is that Pod resource requirements cannot be considered when choosing
+where to allocate. If a resource was allocated so that it is only available on
+one node and the Pod cannot run there because other resources like RAM or CPU
+are exhausted on that node, then the Pod cannot run elsewhere. The same applies
+to resources that are available on a certain subset of the nodes and those
+nodes are busy.
+
+Delayed allocation solves this by integrating allocation with Pod scheduling:
+an attempt to schedule a Pod triggers allocation of pending resources for nodes
+that the scheduler has deemed suitable. Scheduling the pod is then put on hold
+until all resources are allocated. This avoids scenarios where a Pod is
+permanently assigned to a node which can't fit the pod because of the pod's
+other resource requirements.
+
+### Sharing a single ResourceClaim
+
+Pods reference resource claims in a new PodSpec.ResourceClaims list. Each
+resource in that list can then be made available to one or more containers in
+that Pod. Depending on the capabilities defined in the
+ResourceClaim by the driver, a ResourceClaim can be used exclusively
+by one pod at a time or an unlimited number of pods. Support for additional
+constraints (maximum number of pods, maximum number of nodes) could be
+added once there are use cases for those.
+
+Users of a ResourceClaim don't need to be Pods. This KEP specifically supports
+Pods as users and describes how kube-scheduler and kubelet will deal with Pods
+that depend on a ResourceClaim, but the API and some custom resource driver
+might also be useful for controllers to manage resources without using those
+resources for Pods.
+
+### Ephemeral vs. persistent ResourceClaims lifecycle
+
+A persistent ResourceClaim has a lifecyle that is independent of any particular
+pod. It gets created and deleted by the user. This is useful for resources
+which are expensive to configure and that can be used multiple times by pods,
+either at the same time or one after the other. Such persistent ResourceClaims
+get referenced in the pod spec by name. When a PodTemplateSpec in an app
+controller spec references a ResourceClaim by name, all pods created by that
+controller also use that name and thus share the resources allocated for that
+ResourceClaim.
+
+But often, each Pod is meant to have exclusive access to its own ResourceClaim
+instance instead. To support such ephemeral resources without having to modify
+all controllers that create Pods, an entry in the new PodSpec.ResourceClaims
+list can also be a ResourceClaimTemplate. When a Pod gets created, such a
+template will be used to create a normal ResourceClaim with the Pod as owner
+with an
+[OwnerReference](https://pkg.go.dev/k8s.io/apimachinery/pkg/apis/meta/v1#OwnerReference)),
+and then the normal allocation of the resource takes place. Once the pod got
+deleted, the Kubernetes garbage collector will also delete the
+ResourceClaim.
+
+The difference between persistent and ephemeral resources for kube-scheduler
+and kubelet is that the name of the ResourceClaim needs to be determined
+differently: the name of an ephemeral ResourceClaim is `<pod>-<resource name in
+the pod spec>`. Ownership must be checked to detect accidental conflicts with
+persistent ResourceClaims or previous incarnations of the same ephemeral
+resource. This is the same approach that was chosen for [generic ephemeral
+volumes](https://github.com/kubernetes/enhancements/blob/master/keps/sig-storage/1698-generic-ephemeral-volumes/README.md).
+For a resource driver there is no difference.
+
+### Coordinating resource allocation through the scheduler
+
+For immediate allocation, scheduling Pods is simple because the
+resource is already allocated and determines the nodes on which the
+Pod may run. The downside is that pod scheduling is less flexible.
+
+For delayed allocation, a node is selected tentatively by the scheduler
+and driver(s) try to allocate their resources for that node. If that
+succeeds, the Pod can get scheduled. If it fails, the scheduler must
+determine whether some other node fits the requirements and if so,
+request allocation again. If no node fits because some resources were
+already allocated for a node and are only usable there, then those
+resources must be released and then get allocated elsewhere.
+
+This is a summary of the necessary [kube-scheduler changes](#kube-scheduler) in
+pseudo-code:
+
+```
+while <pod needs to be scheduled> {
+  <choose a node, considering potential availability for those resources
+   which are not allocated yet and the hard constraints for those which are>
+  if <no node fits the pod> {
+    if <at least one resource
+            is allocated and unused,
+            uses delayed allocation, and
+            was not available on a node> {
+      <randomly pick one of those resources and tell resource driver to free it>
+    }
+  } else if <all resources allocated> {
+    <schedule pod onto node>
+  } else if <some unallocated resource uses delayed allocation> {
+    <tell resource driver to allocate for the chosen node>
+  }
+}
+```
 
 ### Implementation
 
@@ -732,8 +746,9 @@ For a resource driver the following components are needed:
 - *Resource kubelet plugin*: a component which cooperates with kubelet to prepare
   the usage of the resource on a node.
 
-The utility library will be developed outside of Kubernetes and does not have
-to be used by drivers, therefore it is not described further in this KEP.
+An utility library for resource drivers will be developed outside of Kubernetes
+and does not have to be used by drivers, therefore it is not described further
+in this KEP.
 
 ### Resource allocation flow
 
@@ -1743,7 +1758,7 @@ No.
 
 ###### How can an operator determine if the feature is in use by workloads?
 
-There will be pods which have a non-empty PodSpec.Resources field and ResourceClaim objects.
+There will be pods which have a non-empty PodSpec.ResourceClaims field and ResourceClaim objects.
 
 ###### What are the SLIs (Service Level Indicators) an operator can use to determine the health of the service?
 
