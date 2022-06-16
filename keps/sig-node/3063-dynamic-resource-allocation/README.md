@@ -1312,7 +1312,7 @@ the SelectedNode field of the ResourceClaim
 gets set here and the scheduling attempt gets stopped for now. It will be
 retried when the ResourceClaim status changes.
 
-If all resources have been allocated already,
+If all resources have been allocated already (= `ResourceClaimStatus.Allocation` non-nil),
 the scheduler adds the Pod to the ReservedFor field of its ResourceClaims to ensure that
 no-one else gets to use those.
 
