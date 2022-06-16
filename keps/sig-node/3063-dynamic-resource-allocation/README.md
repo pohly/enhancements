@@ -82,13 +82,13 @@ SIG Architecture for cross-cutting KEPs).
   - [Notes/Constraints/Caveats (Optional)](#notesconstraintscaveats-optional)
   - [Risks and Mitigations](#risks-and-mitigations)
 - [Design Details](#design-details)
+  - [Components](#components)
   - [State and communication](#state-and-communication)
   - [Custom parameters](#custom-parameters)
   - [Allocation modes](#allocation-modes)
   - [Sharing a single ResourceClaim](#sharing-a-single-resourceclaim)
   - [Ephemeral vs. persistent ResourceClaims lifecycle](#ephemeral-vs-persistent-resourceclaims-lifecycle)
   - [Coordinating resource allocation through the scheduler](#coordinating-resource-allocation-through-the-scheduler)
-  - [Implementation](#implementation)
   - [Resource allocation and usage flow](#resource-allocation-and-usage-flow)
   - [API](#api)
   - [kube-controller-manager](#kube-controller-manager)
@@ -561,6 +561,36 @@ and resource driver developers.
 
 ## Design Details
 
+### Components
+
+![components](./components.png)
+
+Several components must be implemented or modified in Kubernetes:
+- The new API must be added to kube-apiserver.
+- A new controller in kube-controller-manager which creates 
+  ResourceClaims from Pod ResourceClaimTemplates, similar to
+  https://github.com/kubernetes/kubernetes/tree/master/pkg/controller/volume/ephemeral
+- A kube-scheduler plugin must detect Pods which reference a
+  ResourceClaim (directly or through a template) and ensure that the
+  resource is allocated before the Pod gets scheduled, similar to
+  https://github.com/kubernetes/kubernetes/blob/master/pkg/controller/volume/scheduling/scheduler_binder.go
+- Kubelet must be extended to retrieve information from ResourceClaims
+  and to call a resource kubelet plugin. That plugin returns CDI device ID(s)
+  which then must be passed to the container runtime.
+
+For a resource driver the following components are needed:
+- *Resource driver controller*: a central component which handles resource allocation
+  by watching ResourceClaims and updating their status once it is done with
+  allocation. It may run inside the cluster or outside of it. The only
+  hard requirement is that it can connect to the API server. Optionally,
+  it may also be configured as a [special scheduler extender](#kube-scheduler).
+- *Resource kubelet plugin*: a component which cooperates with kubelet to prepare
+  the usage of the resource on a node.
+
+An utility library for resource drivers will be developed outside of Kubernetes
+and does not have to be used by drivers, therefore it is not described further
+in this KEP.
+
 ### State and communication
 
 A ResourceClaim object defines what kind of resource is needed and what
@@ -750,36 +780,6 @@ while <pod needs to be scheduled> {
   }
 }
 ```
-
-### Implementation
-
-![components](./components.png)
-
-Several components must be implemented or modified in Kubernetes:
-- The new API must be added to kube-apiserver.
-- A new controller in kube-controller-manager which creates 
-  ResourceClaims from Pod ResourceClaimTemplates, similar to
-  https://github.com/kubernetes/kubernetes/tree/master/pkg/controller/volume/ephemeral
-- A kube-scheduler plugin must detect Pods which reference a
-  ResourceClaim (directly or through a template) and ensure that the
-  resource is allocated before the Pod gets scheduled, similar to
-  https://github.com/kubernetes/kubernetes/blob/master/pkg/controller/volume/scheduling/scheduler_binder.go
-- Kubelet must be extended to retrieve information from ResourceClaims
-  and to call a resource kubelet plugin. That plugin returns CDI device ID(s)
-  which then must be passed to the container runtime.
-
-For a resource driver the following components are needed:
-- *Resource driver controller*: a central component which handles resource allocation
-  by watching ResourceClaims and updating their status once it is done with
-  allocation. It may run inside the cluster or outside of it. The only
-  hard requirement is that it can connect to the API server. Optionally,
-  it may also be configured as a [special scheduler extender](#kube-scheduler).
-- *Resource kubelet plugin*: a component which cooperates with kubelet to prepare
-  the usage of the resource on a node.
-
-An utility library for resource drivers will be developed outside of Kubernetes
-and does not have to be used by drivers, therefore it is not described further
-in this KEP.
 
 ### Resource allocation and usage flow
 
