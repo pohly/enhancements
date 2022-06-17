@@ -622,6 +622,19 @@ pre-provisioning internally. Kubernetes wouldn't know how to match
 pre-provisioned resources against claims because it has no understanding about the
 parameters.
 
+The entire state of a resource can be determined by looking at its
+ResourceClaim (see [API below](#api) for details), for example:
+
+- It is allocated if and only if `ResourceClaimStatus.Allocated` is non-nil and
+  points to the `AllocationResult`.
+
+- It is in use if and only if `ResourceClaimStatus.ReservedFor` contains one or
+  more users.  It does not matter whether those users, usually pods, are
+  currently running because that could change at any time.
+
+- A resource is no longer needed when it has a `DeletionTimestamp`. It must not
+  be freed yet when it is still in use.
+
 Some of the race conditions that need to be handled are:
 
 - A ResourceClaim gets created and deleted again while the resource driver
@@ -798,7 +811,7 @@ else changes in the system, like for example deleting objects.
   * **scheduler** filters nodes
   * if *delayed allocation and resource not allocated yet*:
     * if *at least one node fits pod*:
-      * **scheduler** picks one node, sets `SuitableNodes`, `SelectedNode` and `SelectedUser`
+      * **scheduler** picks one node, sets `SuitableNodes=<all nodes that fit the pod>`, `SelectedNode=<the chosen node>` and `SelectedUser=<the pod being scheduled>`
       * if *resource is available for `SelectedNode`*:
         * **resource driver** adds finalizer to claim to prevent deletion -> allocation in progress
         * **resource driver** finishes allocation, sets `Allocation` and the
@@ -807,7 +820,8 @@ else changes in the system, like for example deleting objects.
       * else *scheduler needs to know that it must avoid this and possibly other nodes*:
         * **resource driver** sets `UnsuitableNodes` -> next attempt by scheduler has more information and is more likely to succeed
     * else *pod cannot be scheduled*:
-      * **scheduler** may trigger freeing some claim (see [pseudo-code above](#coordinating-resource-allocation-through-the-scheduler)) or wait
+      * **scheduler** may trigger freeing some claim by setting `ResourceClaimStatus.Deallocate` to true
+      (see [pseudo-code above](#coordinating-resource-allocation-through-the-scheduler)) or wait
   * if *pod not listed in `ReservedFor` yet* (can occur for immediate allocation):
     * **scheduler** adds it to `ReservedFor`
   * if *resource allocated and reserved*:
@@ -825,7 +839,7 @@ else changes in the system, like for example deleting objects.
   * **kubelet** allows pod deletion to complete by clearing the `GracePeriod`
 * if *pod removed*:
   * **garbage collector** deletes ResourceClaim -> adds `DeletionTimestamp` because of finalizer
-* if *ResourceClaim has `DeletionTimestamp`*:
+* if *ResourceClaim has `DeletionTimestamp` and `ReservedFor` is empty*:
   * **resource driver** frees resources
   * **resource driver** clears finalizer and `Allocation`
   * **API server** removes ResourceClaim
