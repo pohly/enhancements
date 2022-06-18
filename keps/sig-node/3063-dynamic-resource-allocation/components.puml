@@ -27,8 +27,6 @@ component Kubernetes {
 
 controllermanager -[hidden]> kubelet
 drivercontroller -[hidden]> driverplugin
-Pod -[hidden]> otherapi
-otherapi -[hidden]> ResourceClaim
 
 Pod <. ResourceClaim: owned by\n(if created from template)
 ResourceClaim <. ResourceClaimScheduling: owned by
