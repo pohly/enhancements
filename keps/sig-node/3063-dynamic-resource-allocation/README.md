@@ -506,31 +506,26 @@ How will UX be reviewed, and by whom?
 Consider including folks who also work outside the SIG or subproject.
 -->
 
+#### Feature not used
+
 In a cluster where the feature is not used (no resource driver installed, no
 pods using dynamic resource allocation) the impact is minimal, both for
-performance and security. Kubelet only has permission to update a ResourceClaim
-status, but it cannot create new ResourceClaim objects. The scheduler plugin
-and resource controller will return quickly without doing any work for pods.
+performance and security. The scheduler plugin and resource controller will
+return quickly without doing any work for pods.
 
-When there are ResourceClaims in the cluster, a compromised kubelet has
-permission to update the status of all of them, whether the ResourceClaim is
-currently in use on the node or not. This could be used for a denial-of-service
+#### Compromised node
+
+Kubelet is intentionally limited to read-only access for all new API types
+to prevent that a
+compromised kubelet interferes with scheduling of pending pods, for example
+by updating information normally published by the resource driver controller.
+Faking such information could be used for a denial-of-service
 attack against pods using those ResourceClaims, for example by overwriting
 their allocation result with a node selector that matches no node. A
 denial-of-service attack against the cluster and other pods is harder, but
 still possible. For example, frequently updating ResourceClaims could cause new
 scheduling attempts for pending pods. Filling up the `ReservedFor` field
 could exhaust etcd storage.
-
-To mitigate these risks, kubelet's permissions for ResourceClaims could be
-reduced to read-only. In that case, pods would remain in the `ReservedFor`
-field even after they are deleted and the resource controller would need to
-garbage-collect these stale entries before resources can be deleted or reused.
-
-Alternatively, special permissions checks could be added in the API server to
-limit the kind of status updates allowed for kubelet: it should only be allowed
-to remove pods from `ReservedFor`, and only for pods which are assigned to the
-node.
 
 Another potential attack goal is to get pods with sensitive workloads to run on
 a compromised node. For pods that don't use special resources nothing changes
@@ -546,6 +541,8 @@ The security of those custom approaches is the responsibility of the resource
 driver vendor. Solutions like Akri which establish their own control plane and
 then communicate with Kubernetes through the device plugin API already need to
 address this.
+
+#### Usability
 
 Aside from security implications, usability and usefulness of dynamic resource
 allocation also may turn out to be insufficient. Some risks are:
@@ -574,7 +571,9 @@ Several components must be implemented or modified in Kubernetes:
 - The new API must be added to kube-apiserver.
 - A new controller in kube-controller-manager which creates 
   ResourceClaims from Pod ResourceClaimTemplates, similar to
-  https://github.com/kubernetes/kubernetes/tree/master/pkg/controller/volume/ephemeral
+  https://github.com/kubernetes/kubernetes/tree/master/pkg/controller/volume/ephemeral.
+  It also removes the reservation entry for a user in a ResourceClaim (`ReservedFor` field)
+  when that user no longer exists.
 - A kube-scheduler plugin must detect Pods which reference a
   ResourceClaim (directly or through a template) and ensure that the
   resource is allocated before the Pod gets scheduled, similar to
@@ -842,7 +841,6 @@ else changes in the system, like for example deleting objects.
     * **kubelet** creates container(s) which reference(s) the resource through CDI -> Pod is running
 * if *pod has terminated* and *pod deleted*:
   * **kubelet** asks driver to unprepare the resource
-  * **kubelet** removes pod from `ReservedFor`
   * **kubelet** allows pod deletion to complete by clearing the `GracePeriod`
 * if *pod removed*:
   * **garbage collector** deletes ResourceClaim -> adds `DeletionTimestamp` because of finalizer
@@ -1004,8 +1002,9 @@ type ResourceClaimStatus struct {
 	Deallocate bool
 
 	// ReservedFor indicates which entities are currently allowed to use
-	// the resource.  Usually those are Pods, but any other object that
-	// currently exists is also possible.
+	// the resource.  Usually those are Pods, but other objects are
+	// also possible as long as they exist. The resource controller will
+	// remove all entries for objects that do not exist.
 	//
 	// A scheduler must add a Pod that it is scheduling. This must be done
 	// in an atomic ResourceClaim update because there might be multiple
@@ -1013,6 +1012,8 @@ type ResourceClaimStatus struct {
 	// same ResourceClaim.
 	//
 	// kubelet will check this before allowing a Pod to run because a
+	// a user might have selected a node manually without reserving
+	// resources or a
 	// scheduler might have missed that step, for example because it
 	// doesn't support dynamic resource allocation or the feature was
 	// disabled.
@@ -1220,10 +1221,11 @@ just with different types.
 kube-controller-manager will need new [RBAC
 permissions](https://github.com/kubernetes/kubernetes/commit/ff3e5e06a79bc69ad3d7ccedd277542b6712514b#diff-2ad93af2302076e0bdb5c7a4ebe68dd3188eee8959c72832181a7597417cd196) that allow creating ResourceClaims.
 
-As a future extension, kube-controller-manager could also remove ReservedBy
-entries that reference deleted objects. This could serve as fallback for cases
-where the entity that normal removes those entries was unable to do so, for
-example kubelet on a node that shut down unexpectedly.
+kube-controller-manager also removes `ReservedFor` entries that reference
+deleted objects. This is required for pods because kubelet does not have write
+permission for ResourceClaimStatus. Pods as user is the common case, so special
+code based on a shared pod informer will handle it. All other user types can
+be handled through a generic informer or simply polling.
 
 ### kube-scheduler
 
@@ -1446,10 +1448,9 @@ exist at all must not be allowed to run. Instead, a suitable event must be
 emitted which explains the problem. Such a situation can occur as part of
 downgrade scenarios.
 
-In addition, kubelet must remove a Pod from ResourceClaim.ReservedFor before
-deleting the Pod. If this was the last Pod on the node that uses the specific
+If this was the last Pod on the node that uses the specific
 resource instance, then NodeUnprepareResource (see below) must have been called
-successfully. This ensures that network-attached resource are available again
+successfully before allowing the pod to be deleted. This ensures that network-attached resource are available again
 for other Pods, including those that might get scheduled to other nodes. It
 also signals that it is safe to deallocate and delete the ResourceClaim.
 
