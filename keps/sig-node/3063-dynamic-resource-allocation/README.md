@@ -542,6 +542,22 @@ driver vendor. Solutions like Akri which establish their own control plane and
 then communicate with Kubernetes through the device plugin API already need to
 address this.
 
+#### User permissions and quotas
+
+Similar to generic ephemeral inline volumes, the [ephemeral resource use
+case](#ephemeral-vs-persistent-resourceclaims-lifecycle) gets covered by
+creating ResourceClaims on behalf of the user automatically through
+kube-controller-manager. The implication is that RBAC rules that are meant to
+prevent creating ResourceClaims for certain users can be circumvented, at least
+for ephemeral resources. Administrators need to be aware of this caveat when
+designing user restrictions.
+
+A quota system that limits how many resources a user is allowed to allocate
+needs to be supported by the resource driver. When a user has exhausted their
+quota, the driver then would refuse to allocate further ResourceClaims. Such a
+quota system cannot be implemented in core Kubernetes because Kubernetes has no
+information about how much a certain ResourceClaim count against the quota.
+
 #### Usability
 
 Aside from security implications, usability and usefulness of dynamic resource
