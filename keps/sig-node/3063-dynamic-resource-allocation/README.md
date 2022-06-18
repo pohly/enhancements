@@ -669,6 +669,11 @@ Some of the race conditions that need to be handled are:
   any time: when it restarts, the finalizer indicates that allocation may be in
   progress and has to be completed or aborted.
 
+  However, users may still force-delete a ResourceClaim, or the entire
+  cluster might get deleted. Driver implementations must store enough
+  information elsewhere to detect when some allocated resource is no
+  longer needed to recover from such scenarios.
+
 - In a cluster with multiple scheduler instances, two pods might get
   scheduled concurrently by different schedulers. When they reference
   the same ResourceClaim which may only get used by one pod at a time,
@@ -683,12 +688,11 @@ Some of the race conditions that need to be handled are:
 ### Custom parameters
 
 To support arbitrarily complex parameters, both ResourceClass and ResourceClaim
-contain one field of type
-[v1.TypedLocalObjectReference](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.23/#typedlocalobjectreference-v1-core)
-which references a separate object. This information is sufficient for generic clients to
+contain one field which references a separate object. The reference contains
+API group, kind and name and thus is sufficient for generic clients to
 retrieve the parameters. For ResourceClass, that object must be
 cluster-scoped. For ResourceClaim, it must be in the same namespace as the
-ResourceClaim and thus the Pod. Which objects a resource driver accepts as parameters depends on
+ResourceClaim and thus the Pod. Which kind of objects a resource driver accepts as parameters depends on
 the driver.
 
 This approach was chosen because then validation of the parameters can be done
@@ -698,14 +702,19 @@ are needed.
 A resource driver may support modification of the parameters while a resource
 is in use ("online resizing"). It may update the ResourceClaim status to
 reflect the modified state, for example by increasing the number of concurrent
-users. However, the state must not be modified such that a user of the resource
-no longer has access.
+users. The driver must not allow the state to be modified such
+that a user of the resource no longer has access.
 
 Parameters may get deleted before the ResourceClaim or ResourceClass that
 references them. In that case, a pending resource cannot be allocated until the
-parameters get recreated. An allocated resource must remain usable and deallocating
-it must be possible. To support this, resource drivers must copy all relevant
-information into the ResourceClaim status when allocating it.
+parameters get recreated. An allocated resource must remain usable and
+deallocating it must be possible. To support this, resource drivers must copy
+all relevant information:
+- For usage, the `AllocationResult.Attributes` can be hold the copied information
+  because the ResourceClaim and thus this field must exist.
+- For deallocation, drivers should use some other location to handle
+  cases where a user force-deletes a ResourceClaim or the entire
+  cluster gets removed.
 
 ### Allocation modes
 
@@ -920,7 +929,7 @@ type ResourceClass struct {
 	// set by cluster administrators.
 	//
 	// The object must be cluster-scoped.
-	Parameters TypedLocalObjectReference
+	Parameters ResourceClassParametersReference
 
 	// Only nodes matching the selector will be considered by the scheduler
 	// when trying to find a Node that fits a Pod when that Pod uses
@@ -970,7 +979,7 @@ type ResourceClaimSpec struct {
 	// driver when allocating a resource for the claim.
 	//
 	// The object must be in the same namespace as the ResourceClaim.
-	Parameters TypedLocalObjectReference
+	Parameters ResourceClaimParametersReference
 
 	// Allocation can start immediately or when a Pod wants to use the
 	// resource. Waiting for a Pod is the default.
@@ -1242,6 +1251,35 @@ type ResourceClaimTemplate struct {
 	// template. The same fields as in a ResourceClaim
 	// are also valid here.
 	Spec ResourceClaimSpec
+}
+
+// ResourceClassParametersReference contains enough information to let you locate the
+// parameters for a ResourceClass. The object must be cluster-scoped.
+type ResourceClassParametersReference struct {
+	// APIGroup is the group for the resource being referenced.
+	// If APIGroup is not specified, the specified Kind must be in the core API group.
+	// For any other third-party types, APIGroup is required.
+	// +optional
+	APIGroup *string
+	// Kind is the type of resource being referenced
+	Kind string
+	// Name is the name of resource being referenced
+	Name string
+}
+
+// ResourceClaimParametersReference contains enough information to let you locate the
+// parameters for a ResourceClaim. The object must be in the same namespace
+// as the ResourceClaim.
+type ResourceClaimParametersReference struct {
+	// APIGroup is the group for the resource being referenced.
+	// If APIGroup is not specified, the specified Kind must be in the core API group.
+	// For any other third-party types, APIGroup is required.
+	// +optional
+	APIGroup *string
+	// Kind is the type of resource being referenced
+	Kind string
+	// Name is the name of resource being referenced
+	Name string
 }
 ```
 
