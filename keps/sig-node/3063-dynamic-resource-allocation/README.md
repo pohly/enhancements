@@ -1187,6 +1187,8 @@ type PodSpec {
    // and reserved before the Pod is allowed to start. The resources
    // will be made available to those containers which reference them
    // by name.
+   //
+   // At most 32 entries are allowed.
    ResourceClaims []PodResourceClaim
    ...
 }
