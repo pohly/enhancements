@@ -833,14 +833,16 @@ else changes in the system, like for example deleting objects.
   * **scheduler** filters nodes
   * if *delayed allocation and resource not allocated yet*:
     * if *at least one node fits pod*:
-      * **scheduler** picks one node, sets `SuitableNodes=<all nodes that fit the pod>`, `SelectedNode=<the chosen node>` and `SelectedUser=<the pod being scheduled>`
+      * **scheduler** picks one node, sets `SelectedNode=<the chosen node>` and `SelectedUser=<the pod being scheduled>`
+      * **scheduler** creates or updates a `ResourceClaimScheduling` object with `PotentialNodes=<all nodes that fit the pod>`
       * if *resource is available for `SelectedNode`*:
         * **resource driver** adds finalizer to claim to prevent deletion -> allocation in progress
         * **resource driver** finishes allocation, sets `Allocation` and the
-          intended user in `ReservedFor` -> claim ready for use and reserved
+          intended user in `ReservedFor`, clears `SelectedNode` and `SelectedUser` -> claim ready for use and reserved
           for the pod
+        * **resource driver** deletes `ResourceClaimScheduling` object if there is one
       * else *scheduler needs to know that it must avoid this and possibly other nodes*:
-        * **resource driver** sets `UnsuitableNodes` -> next attempt by scheduler has more information and is more likely to succeed
+        * **resource driver** sets `ResourceClaimScheduling.UnsuitableNodes` -> next attempt by scheduler has more information and is more likely to succeed
     * else *pod cannot be scheduled*:
       * **scheduler** may trigger deallocation of some claim with delayed allocation by setting `ResourceClaimStatus.Deallocate` to true
       (see [pseudo-code above](#coordinating-resource-allocation-through-the-scheduler)) or wait
@@ -919,6 +921,13 @@ type ResourceClass struct {
 	//
 	// The object must be cluster-scoped.
 	Parameters TypedLocalObjectReference
+
+	// Only nodes matching the selector will be considered by the scheduler
+	// when trying to find a Node that fits a Pod when that Pod uses
+	// a ResourceClaim that has not been allocated yet.
+	//
+	// Setting this field is optional. If nil, all nodes are candidates.
+	SuitableNodes *core.NodeSelector
 }
 
 // ResourceClaim is created by users to describe which resources they need.
@@ -1045,21 +1054,18 @@ type ResourceClaimStatus struct {
 	UsedOnNodes []string
 }
 
-// SchedulingStatus is used while handling delayed allocation.
+// SchedulingStatus contains information that is relevant while
+// a Pod with delayed allocation is being scheduled.
 type SchedulingStatus struct {
-	// Scheduler contains information provided by the scheduler.
-	Scheduler SchedulerSchedulingStatus
-
-	// DriverStatus contains information provided by the resource driver.
-	Driver DriverSchedulingStatus
-}
-
-// SchedulerSchedulingStatus contains information provided by the scheduler
-// while handling delayed allocation.
-type SchedulerSchedulingStatus struct {
 	// When allocation is delayed, the scheduler must set
 	// the node for which it wants the resource to be allocated
 	// before the driver proceeds with allocation.
+	//
+	// This field may only be set by a scheduler, but not get
+	// overwritten. It will get reset by the driver when allocation
+	// succeeds or fails. This ensures that different schedulers
+	// that handle different Pods do not accidentally trigger
+	// allocation for different nodes.
 	//
 	// For immediate allocation, the scheduler will not set
 	// this field. The resource driver controller may
@@ -1081,42 +1087,6 @@ type SchedulerSchedulingStatus struct {
 	// will be ready for use by the Pod the next time that the scheduler
 	// tries to schedule it.
 	SelectedUser *metav1.OwnerReference
-
-	// When allocation is delayed, and the scheduler needs to
-	// decide on which node a Pod should run, it will
-	// ask the driver on which nodes the resource might be
-	// made available. To trigger that check, the scheduler
-	// provides the names of nodes which might be suitable
-	// for the Pod. Will be updated periodically until
-	// the claim is allocated.
-	PotentialNodes []string
-}
-
-// DriverSchedulingStatus contains information provided by the resource driver
-// while handling delayed allocation.
-type DriverSchedulingStatus struct {
-	// Only nodes matching the selector will be considered by the scheduler
-	// when trying to find a Node that fits a Pod. A resource driver can
-	// set this immediately when a ResourceClaim gets created and, for
-	// example, provide a static selector that uses labels.
-	//
-	// Setting this field is optional. If nil, all nodes are candidates.
-	SuitableNodes *core.NodeSelector
-
-	// A change of the PotentialNodes field triggers a check in the driver
-	// on which of those nodes the resource might be made available. It
-	// then excludes nodes by listing those where that is not the case in
-	// UnsuitableNodes.
-	//
-	// Nodes listed here will be ignored by the scheduler when selecting a
-	// node for a Pod. All other nodes are potential candidates, either
-	// because no information is available yet or because allocation might
-	// succeed.
-	//
-	// This can change, so the driver must refresh this information
-	// periodically and/or after changing resource allocation for some
-	// other ResourceClaim until a node gets selected by the scheduler.
-	UnsuitableNodes []string
 }
 
 // AllocationResult contains attributed of an allocated resource.
@@ -1148,6 +1118,54 @@ type AllocationResult struct {
 	// SharedResource determines whether the resource supports more
 	// than one user at a time.
 	SharedResource bool
+}
+
+// ResourceClaimScheduling objects get created by a scheduler when it needs
+// information from a resource driver while scheduling a Pod that uses
+// an unallocated ResourceClaim with delayed allocation.
+//
+// Alternatively, a scheduler extender might be configured for the
+// resource driver. In that case no such object is needed.
+type ResourceClaimScheduling struct {
+	metav1.TypeMeta
+
+	// The name must be the same as the corresponding ResourceClaim.
+	// That ResourceClaim must be listed as owner in OwnerReferences
+	// to ensure that the ResourceClaimScheduling gets deleted
+	// when no longer needed. Normally the driver will delete it,
+	// but it might get removed before it has a chance to do that.
+	//
+	// More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata
+	metav1.ObjectMeta
+
+	// When allocation is delayed, and the scheduler needs to
+	// decide on which node a Pod should run, it will
+	// ask the driver on which nodes the resource might be
+	// made available. To trigger that check, the scheduler
+	// provides the names of nodes which might be suitable
+	// for the Pod. Will be updated periodically until
+	// the claim is allocated.
+	//
+	// The ResourceClass.SuiteableNodes node selector can be
+	// used to filter out nodes based on labels. This prevents
+	// adding nodes here that the driver then would need to
+	// reject through UnsuitableNodes.
+	PotentialNodes []string
+
+	// A change of the PotentialNodes field triggers a check in the driver
+	// on which of those nodes the resource might be made available. It
+	// then excludes nodes by listing those where that is not the case in
+	// UnsuitableNodes.
+	//
+	// Nodes listed here will be ignored by the scheduler when selecting a
+	// node for a Pod. All other nodes are potential candidates, either
+	// because no information is available yet or because allocation might
+	// succeed.
+	//
+	// This can change, so the driver must refresh this information
+	// periodically and/or after changing resource allocation for some
+	// other ResourceClaim until a node gets selected by the scheduler.
+	UnsuitableNodes []string
 }
 
 type PodSpec {
@@ -1269,8 +1287,8 @@ type Extender struct {
        // and Bind (if the extender is the binder) phases iff the pod requests at least
        // one ResourceClaim for which the resource driver name in the corresponding
        // ResourceClass is listed here. In addition, the builtin dynamic resources
-       // plugin will skip setting SuitableNodes for claims managed by the extender
-       // if the extender has a FilterVerb.
+       // plugin will skip creation and updating of the ResourceClaimScheduling object
+       // for claims managed by the extender if the extender has a FilterVerb.
        ManagedResourceDrivers []string
 ```
 
@@ -1293,14 +1311,15 @@ This checks whether the given node has access to those ResourceClaims which
 were already allocated.
 
 For unallocated ResourceClaims with delayed allocation, only those nodes are
-filtered out that are explicitly listed in UnsuitableNodes or that don't match
-the optional AvailableOnNodes node filter.
+filtered out that are explicitly listed in a ResourceClaimScheduling.UnsuitableNodes
+field (if such an object already exists) or that don't match
+the optional ResourceClass.SuitableNodes node selector.
 
 There are several
 reasons why such a deny list is more suitable than an allow list:
 - Nodes for which no information is available must pass the filter phase to be
-  included in the list that will be passed to the post-filter and to get copied
-  into the PotentialNodes field there.
+  included in the list that will be passed to pre-score and to get copied
+  into the ResourceClaimScheduling.PotentialNodes field there.
 - A node can already be chosen while there is no information yet and, if
   allocation for that node actually works, the Pod can get scheduled sooner.
 - Some resource drivers might not have any unsuitable nodes, for example
@@ -1341,10 +1360,14 @@ might attempt to improve this.
 #### Pre-score
 
 This is passed a list of nodes that have passed filtering by the resource
-plugin and the other plugins. The PotentialNodes field of unallocated
+plugin and the other plugins. The ResourceClaimScheduling.PotentialNodes field of unallocated
 ResourceClaims with delayed allocation gets updated now if the field doesn't
-match the current list already and there is no scheduler extender for the
-claim.
+match the current list already. If no ResourceClaimScheduling object exists yet,
+it gets created.
+
+When there is a scheduler extender configured for the claim, creating and
+updating ResourceClaimScheduling objects gets skipped because the scheduler
+extender handles filtering.
 
 #### Reserve
 
