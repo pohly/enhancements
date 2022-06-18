@@ -382,6 +382,12 @@ apiVersion: gpu.acme.com/v1
 kind: GPUInit
 metadata:
   name: acme-gpu-init
+# DANGER! This option must not be accepted for
+# user-supplied parameters. A real driver might
+# not even allow it for admins. This is just
+# an example to show the conceptual difference
+# between ResourceClass and ResourceClaim
+# parameters.
 initCommand:
 - /usr/local/bin/acme-gpu-init
 - --cluster
@@ -472,7 +478,7 @@ card in a Kubernetes edge cluster. Intel provides a single resource driver that
 has parameters for setting up all of these hardware functions together as
 needed for a data flow pipeline.
 
-### Notes/Constraints/Caveats (Optional)
+### Notes/Constraints/Caveats
 
 Scheduling is likely to be slower when many Pods request the new
 resource types, both because scheduling such a Pod involves more
@@ -483,8 +489,7 @@ limited resources, multiple attempts may be needed before a suitable
 node is found.
 
 The hardware that is expected to need this more flexible allocation
-approach is going to be used by only a small subset of the pods in the
-cluster and those pods are likely to run for extended periods of time,
+approach is likely to be used by pods that run for extended periods of time,
 so this is not a major concern.
 
 ### Risks and Mitigations
@@ -633,7 +638,7 @@ ResourceClaim (see [API below](#api) for details), for example:
   currently running because that could change at any time.
 
 - A resource is no longer needed when it has a `DeletionTimestamp`. It must not
-  be freed yet when it is still in use.
+  be deallocated yet when it is still in use.
 
 Some of the race conditions that need to be handled are:
 
@@ -683,7 +688,7 @@ no longer has access.
 
 Parameters may get deleted before the ResourceClaim or ResourceClass that
 references them. In that case, a pending resource cannot be allocated until the
-parameters get recreated. An allocated resource must remain usable and freeing
+parameters get recreated. An allocated resource must remain usable and deallocating
 it must be possible. To support this, resource drivers must copy all relevant
 information into the ResourceClaim status when allocating it.
 
@@ -781,10 +786,12 @@ while <pod needs to be scheduled> {
    which are not allocated yet and the hard constraints for those which are>
   if <no node fits the pod> {
     if <at least one resource
-            is allocated and unused,
+            is allocated and unused or reserved for the current pod,
             uses delayed allocation, and
             was not available on a node> {
-      <randomly pick one of those resources and tell resource driver to free it>
+      <randomly pick one of those resources and
+       tell resource driver to deallocate it by setting `Deallocate` and
+       removing the pod from `ReservedFor` (if present there)>
     }
   } else if <all resources allocated> {
     <schedule pod onto node>
@@ -820,7 +827,7 @@ else changes in the system, like for example deleting objects.
       * else *scheduler needs to know that it must avoid this and possibly other nodes*:
         * **resource driver** sets `UnsuitableNodes` -> next attempt by scheduler has more information and is more likely to succeed
     * else *pod cannot be scheduled*:
-      * **scheduler** may trigger freeing some claim by setting `ResourceClaimStatus.Deallocate` to true
+      * **scheduler** may trigger deallocation of some claim with delayed allocation by setting `ResourceClaimStatus.Deallocate` to true
       (see [pseudo-code above](#coordinating-resource-allocation-through-the-scheduler)) or wait
   * if *pod not listed in `ReservedFor` yet* (can occur for immediate allocation):
     * **scheduler** adds it to `ReservedFor`
@@ -840,7 +847,7 @@ else changes in the system, like for example deleting objects.
 * if *pod removed*:
   * **garbage collector** deletes ResourceClaim -> adds `DeletionTimestamp` because of finalizer
 * if *ResourceClaim has `DeletionTimestamp` and `ReservedFor` is empty*:
-  * **resource driver** frees resources
+  * **resource driver** deallocates resource
   * **resource driver** clears finalizer and `Allocation`
   * **API server** removes ResourceClaim
 
@@ -909,7 +916,7 @@ type ResourceClaim struct {
 	// The driver must set a finalizer here before it attempts to allocate
 	// the resource. It removes the finalizer again when a) the allocation
 	// attempt has definitely failed or b) when the allocated resource was
-	// freed. This ensures that resources are not leaked.
+	// deallocated. This ensures that resources are not leaked.
 	//
 	// More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata
 	metav1.ObjectMeta
@@ -987,8 +994,8 @@ type ResourceClaimStatus struct {
 	// allocated.
 	Allocation *AllocationResult
 
-	// Deallocate may be set to true to request freeing a resource as soon
-	// as it is unused. The scheduler uses this when it finds that freeing
+	// Deallocate may be set to true to request deallocation of a resource as soon
+	// as it is unused. The scheduler uses this when it finds that deallocating
 	// the resource and reallocating it elsewhere might unblock a pod.
 	//
 	// The resource driver checks this fields and resets it to false
@@ -1168,12 +1175,16 @@ type PodResourceClaim struct {
 	//
 	// An existing ResourceClaim with that name that is not owned by the pod
 	// will *not* be used for the pod to avoid using an unrelated
-	// resource by mistake. Starting the pod is then blocked until
+	// resource by mistake. Scheduling is then blocked until
 	// the unrelated ResourceClaim is removed. If such a pre-created ResourceClaim is
 	// meant to be used by the pod, the ResourceClaim has to be updated with an
 	// owner reference to the pod once the pod exists. Normally
 	// this should not be necessary, but it may be useful when
 	// manually reconstructing a broken cluster.
+	//
+	// Running the pod also gets blocked by a wrong ownership. This should
+	// be even less likely because of the prior scheduling check, but could
+	// happen if a user force-deletes or modifies the ResourceClaim.
 	//
 	// This field is read-only and no changes will be made by Kubernetes
 	// to the ResourceClaim after it has been created.
@@ -1290,14 +1301,14 @@ allocation, then deallocating one or more of these ResourceClaims may make the
 Pod schedulable after allocating the resource elsewhere. Therefore each
 ResourceClaim with delayed allocation is checked whether all of the following
 conditions apply:
-- allocated (= `ResourceClaimStatus.Allocation` non-nil)
-- not currently in use (= `ResourceClaimStatus.ReservedFor` empty)
+- allocated
+- not currently in use
 - it was the reason why some node could not fit the Pod, as recorded earlier in
   Filter
 
-One of the ResourceClaims satisfying these criteria is picked randomly and freeing
-it is requested by setting the Deallocate field. The scheduler then needs to wait
-for the resource driver to react to that change and free the resource.
+One of the ResourceClaims satisfying these criteria is picked randomly and deallocation
+is requested by setting the Deallocate field. The scheduler then needs to wait
+for the resource driver to react to that change and deallocate the resource.
 
 This may make it possible to run the Pod
 elsewhere. If it still doesn't help, deallocation may continue with another
@@ -1326,7 +1337,7 @@ the SelectedNode field of the ResourceClaim
 gets set here and the scheduling attempt gets stopped for now. It will be
 retried when the ResourceClaim status changes.
 
-If all resources have been allocated already (= `ResourceClaimStatus.Allocation` non-nil),
+If all resources have been allocated already,
 the scheduler adds the Pod to the ReservedFor field of its ResourceClaims to ensure that
 no-one else gets to use those.
 
