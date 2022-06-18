@@ -625,7 +625,7 @@ parameters.
 The entire state of a resource can be determined by looking at its
 ResourceClaim (see [API below](#api) for details), for example:
 
-- It is allocated if and only if `ResourceClaimStatus.Allocated` is non-nil and
+- It is **allocated** if and only if `ResourceClaimStatus.Allocated` is non-nil and
   points to the `AllocationResult`.
 
 - It is in use if and only if `ResourceClaimStatus.ReservedFor` contains one or
