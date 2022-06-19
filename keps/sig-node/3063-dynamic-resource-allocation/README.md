@@ -1056,15 +1056,6 @@ type ResourceClaimStatus struct {
 	// doesn't support dynamic resource allocation or the feature was
 	// disabled.
 	ReservedFor []metav1.OwnerReference
-
-	// UsedOnNodes is a list of nodes where the ResourceClaim is or is
-	// going to be used. This must be set by the scheduler after scheduling
-	// a Pod onto a node.
-	//
-	// List/watch requests for ResourceClaims can filter on this field
-	// using a "status.usedOnNodes.<entry>=1" fieldSelector. kubelet uses
-	// this to limit which ResourceClaims it receives from the apiserver.
-	UsedOnNodes []string
 }
 
 // SchedulingStatus contains information that is relevant while
