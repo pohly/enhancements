@@ -1139,6 +1139,11 @@ type ResourceClaimScheduling struct {
 	// when no longer needed. Normally the driver will delete it,
 	// but it might get removed before it has a chance to do that.
 	//
+	// The special ResourceDriverLabel must be set to the name of
+	// the resource driver that is expected to provide the
+	// information. Resource drivers can use that as filter to
+	// receive only objects that are relevant for them.
+	//
 	// More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata
 	metav1.ObjectMeta
 
@@ -1171,6 +1176,13 @@ type ResourceClaimScheduling struct {
 	// other ResourceClaim until a node gets selected by the scheduler.
 	UnsuitableNodes []string
 }
+
+const (
+	// ResourceDriverLabel is set to the name of a resource driver. It is
+	// used for ResourceClaimScheduling objects to enable server-side
+	// filtering of objects that need to be handled by a certain driver.
+	ResourceDriverLabel = "resource-driver.k8s.io"
+)
 
 type PodSpec {
    ...
