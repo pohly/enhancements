@@ -382,7 +382,7 @@ I create a ResourceClass for the hardware with parameters that only I as the
 administrator am allowed to choose, like for example running a command with
 root privileges that does some cluster-specific initialization for each allocation:
 ```
-apiVersion: gpu.acme.com/v1
+apiVersion: gpu.example.com/v1
 kind: GPUInit
 metadata:
   name: acme-gpu-init
@@ -401,9 +401,9 @@ apiVersion: core.k8s.io/v1alpha1
 kind: ResourceClass
 metadata:
   name: acme-gpu
-driverName: gpu.acme.com
+driverName: gpu.example.com
 parameters:
-  apiVersion: gpu.acme.com/v1
+  apiVersion: gpu.example.com/v1
   kind: GPUInit
   name: acme-gpu-init
 ```
@@ -418,7 +418,7 @@ an "acme-gpu" ResourceClass.
 For a simple trial, I create a Pod directly where two containers share the same subset
 of the GPU:
 ```
-apiVersion: gpu.acme.com/v1
+apiVersion: gpu.example.com/v1
 kind: GPURequirements
 metadata:
   name: device-consumer-gpu-parameters
@@ -434,7 +434,7 @@ spec:
     template:
       resourceClassName: "acme-gpu"
       parameters:
-        apiVersion: gpu.acme.com/v1
+        apiVersion: gpu.example.com/v1
         kind: GPURequirements
         name: device-consumer-gpu-parameters
   containers:
@@ -583,6 +583,36 @@ and resource driver developers.
 
 ## Design Details
 
+### Theory of operation
+
+In general, this new API works as described below (more details and exploration
+of corner cases will follow):
+
+* A user creates a ResourceClaim. This claim may be created by the user
+  directly (the user owns the resource's lifetime) or indirectly through a pod
+  (the pod owns the resource's lifetime).
+
+* A resource driver observes the claim and allocates the underlying resource if
+  it can.
+
+* A pod references the claim in its spec.
+
+* When a claim is meant to be allocated for a specific pod, the scheduler and
+  the resource driver(s) coordinate to pick a viable node before the claim gets
+  allocated.
+
+* Once allocated, a pod which consumes the resource is scheduled to a node where
+  the resource is available.
+
+* Kubelet on that node communicates with the node-level part of the resource
+  driver to present the resource to the pod.
+
+* When the pod completes, the Kubelet on that node communicates with node-level
+  part of the resource driver to clean up.
+
+* When the claim is released (deleted), the resource driver can free the
+  underlying resource.
+
 ### Components
 
 ![components](./components.png)
@@ -650,7 +680,8 @@ The entire state of a resource can be determined by looking at its
 ResourceClaim (see [API below](#api) for details), for example:
 
 - It is **allocated** if and only if `ResourceClaimStatus.Allocated` is non-nil and
-  points to the `AllocationResult`.
+  points to the `AllocationResult`, the struct where the resource drivers stores
+  information about a successful allocation.
 
 - It is in use if and only if `ResourceClaimStatus.ReservedFor` contains one or
   more users.  It does not matter whether those users, usually pods, are
@@ -677,6 +708,12 @@ Some of the race conditions that need to be handled are:
   cluster might get deleted. Driver implementations must store enough
   information elsewhere to detect when some allocated resource is no
   longer needed to recover from such scenarios.
+
+- A ResourceClaim gets deleted and recreated while the resource driver is
+  adding the finalizer. The driver must update the object to add the finalizer
+  and then will get a conflict error, which informs the driver that it must
+  work on a new instance of the claim. In general, patching a ResourceClaim
+  is only acceptable when it does not lead to race conditions.
 
 - In a cluster with multiple scheduler instances, two pods might get
   scheduled concurrently by different schedulers. When they reference
@@ -1110,10 +1147,8 @@ type AllocationResult struct {
 	// allocated the resource driver to inform the scheduler where it can
 	// schedule Pods using the ResourceClaim.
 	//
-	// A resource driver may already set this before the resource is
-	// allocated. The scheduler will then check this field in addition to
-	// UnsuitableNodes to filter out nodes where the resource cannot be
-	// allocated.
+	// Node-local resources can use the `kubernetes.io/hostname` label
+	// to select a specific node.
 	//
 	// Setting this field is optional. If nil, the resource is available
 	// everywhere.
@@ -1846,6 +1881,7 @@ For beta:
 - Positive acknowledgment from 3 would-be implementors of a resource driver,
   from a diversity of companies or projects
 - Tests are in Testgrid and linked in KEP
+- Documentation for users and resource driver developers published
 - In addition to the basic features, we also handle:
   - reuse of network-attached resources after unexpected node shutdown
 
