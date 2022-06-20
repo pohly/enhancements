@@ -1869,7 +1869,7 @@ parts of the cluster (apiserver, kube-scheduler), but not on some nodes. The
 resource driver is responsible for setting ResourceClaim.AvailableOnNodes so
 that those nodes are not included.
 
-But if a Pod with ResoureClaims already got scheduled onto a node without the
+But if a Pod with ResourceClaims already got scheduled onto a node without the
 feature enabled, kubelet will start it without those additional
 resources. Applications must be prepared for this and refuse to run. This will
 put the Pod into a failed state that administrators or users need to resolve by
