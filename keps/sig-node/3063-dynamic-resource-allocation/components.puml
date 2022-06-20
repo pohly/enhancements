@@ -11,7 +11,7 @@ component Kubernetes {
   component apiserver {
       file Pod
       file ResourceClaim
-      file ResourceClaimScheduling
+      file PodScheduling
   }
   component scheduler {
     component "resource plugin" as k8sresourceplugin
@@ -29,13 +29,13 @@ controllermanager -[hidden]> kubelet
 drivercontroller -[hidden]> driverplugin
 
 Pod <. ResourceClaim: owned by\n(if created from template)
-ResourceClaim <. ResourceClaimScheduling: owned by
+Pod <. PodScheduling: owned by
 
 
 Pod -u-> k8sresourceclaimcontroller: read claim template\nfrom Pod spec
 ResourceClaim <-u- k8sresourceclaimcontroller: create claim,\nclean up users
 ResourceClaim <-u-> kubelet
-k8sresourceplugin <-u-> ResourceClaimScheduling
+k8sresourceplugin <-u-> PodScheduling
 
 Pod <--> scheduler
 ResourceClaim <--> k8sresourceplugin
@@ -43,5 +43,5 @@ ResourceClaim <--> k8sresourceplugin
 ResourceClaim <-> drivercontroller
 pluginmanager <-> driverplugin
 resourcemanager <-> driverplugin
-ResourceClaimScheduling <-> drivercontroller
+PodScheduling <-> drivercontroller
 @enduml
