@@ -276,8 +276,9 @@ limitations of the current approach for the following use cases:
   nodes when resources get used.
 
 Several other limitations are addressed by
-[CDI](https://github.com/container-orchestrated-devices/container-device-interface/).
-
+[CDI](https://github.com/container-orchestrated-devices/container-device-interface/),
+a container runtime extension that this KEP is using to expose resources
+inside a container.
 
 ### Goals
 
@@ -556,11 +557,20 @@ prevent creating ResourceClaims for certain users can be circumvented, at least
 for ephemeral resources. Administrators need to be aware of this caveat when
 designing user restrictions.
 
-A quota system that limits how many resources a user is allowed to allocate
+A quota system that limits how much of the underlying resources a user may consume
 needs to be supported by the resource driver. When a user has exhausted their
 quota, the driver then would refuse to allocate further ResourceClaims. Such a
 quota system cannot be implemented in core Kubernetes because Kubernetes has no
-information about how much a certain ResourceClaim count against the quota.
+information about how much a certain ResourceClaim would count against the quota.
+
+What can be limited in Kubernetes itself is the number of ResourceClaims per
+namespace. For this, two new ResourceQuota resource names get added:
+
+- `resourceclaims` limits the number of ResourceClaim objects in a namespace
+  across all resource class.
+- `<resource-class-name>.resourceclass.node.k8s.io/resourceclaims` limits the
+  number of ResourceClaim objects for the specific resource class.
+
 
 #### Usability
 
@@ -618,7 +628,8 @@ of corner cases will follow):
 ![components](./components.png)
 
 Several components must be implemented or modified in Kubernetes:
-- The new API must be added to kube-apiserver.
+- The new API must be added to kube-apiserver. The ResourceQuota admission
+  plugin needs to check the new quota limits when ResourceClaims get created.
 - A new controller in kube-controller-manager which creates 
   ResourceClaims from Pod ResourceClaimTemplates, similar to
   https://github.com/kubernetes/kubernetes/tree/master/pkg/controller/volume/ephemeral.
@@ -662,9 +673,14 @@ proposed in this KEP.
 
 All relevant state of a ResourceClaim is captured inside that object
 itself. For additional information that is needed only during pod scheduling, a
-separate PodScheduling object gets created by the scheduler if needed.
+separate PodScheduling object gets created by the scheduler if needed.  The
+PodScheduling object has the same name and namespace as the pod and the pod as
+its as owner. This ownership must be checked before using a PodScheduling
+object to detect stale objects that do not match a recreated pod. Such stale
+objects get deleted by the garbage collector or the scheduler, depending on who
+gets to it first.
 
-This has two advantages:
+Handling state and communication through objects has two advantages:
 - Changes for a resource are atomic, which avoids race conditions.
 - The only requirement for deployments is that the components can connect to
   the API server. Direct communication is not needed, but in some cases
@@ -713,10 +729,13 @@ Some of the race conditions that need to be handled are:
   longer needed to recover from such scenarios.
 
 - A ResourceClaim gets deleted and recreated while the resource driver is
-  adding the finalizer. The driver must update the object to add the finalizer
+  adding the finalizer. The driver can update the object to add the finalizer
   and then will get a conflict error, which informs the driver that it must
   work on a new instance of the claim. In general, patching a ResourceClaim
-  is only acceptable when it does not lead to race conditions.
+  is only acceptable when it does not lead to race conditions. To detect
+  delete+recreate, the UID must be added as precondition for a patch.
+  To detect also potentially conflicting other changes, ResourceVersion
+  needs to be checked, too.
 
 - In a cluster with multiple scheduler instances, two pods might get
   scheduled concurrently by different schedulers. When they reference
@@ -1936,6 +1955,7 @@ For beta:
 #### Beta -> GA Graduation
 
 - 3 examples of real-world usage
+- Agreement that quota management is sufficient
 - Conformance, downgrade tests and scalability tests
 - Allowing time for feedback
 
