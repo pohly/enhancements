@@ -1113,8 +1113,11 @@ const (
 // the resulting attributes are.
 type ResourceClaimStatus struct {
 	// DriverName is a copy of the driver name from the ResourceClass at
-	// the time when allocation started. It's necessary to support
-	// deallocation when the class gets deleted before a claim.
+	// the time when allocation started. It's necessary to enable usage
+	// of the claim by kubelet in case that the ResourceClass got
+	// removed in the meantime. It also helps the resource driver
+	// to determine whether it needs to handle a claim that got
+	// marked for deletion.
 	DriverName string
 
 	// Scheduling contains information that is only relevant while the
