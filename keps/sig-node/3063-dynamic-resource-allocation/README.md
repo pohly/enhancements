@@ -852,6 +852,17 @@ For a resource driver there is no difference.
 
 ### Coordinating resource allocation through the scheduler
 
+<<[UNRESOLVED pohly]>>
+The entire scheduling section is tentative. Key opens:
+- Support arbitrary combinations of user- vs. Kubernetes-managed ResourceClaims
+  and immediate vs. late allocation?
+  https://github.com/kubernetes/enhancements/pull/3064#discussion_r901948474
+- Can and should `SelectedNode`, `SelectedUser`, `Deallocate` be moved to
+  `PodScheduling` or be handled differently?
+  https://github.com/pohly/enhancements/pull/13/files
+<<[/UNRESOLVED]>>
+
+
 For immediate allocation, scheduling Pods is simple because the
 resource is already allocated and determines the nodes on which the
 Pod may run. The downside is that pod scheduling is less flexible.
@@ -1102,6 +1113,12 @@ type ResourceClaimSpec struct {
 type AllocationMode string
 
 const (
+
+<<[UNRESOLVED pohly]>>
+This probably should be "WaitForFirstConsumer", for consistency with volumes
+and because it is clearer what the claim is waiting for.
+<<[/UNRESOLVED]>>
+
 	// When a ResourceClaim has AllocationModeDelayed, allocation is
 	// delayed until a Pod gets scheduled that needs the ResourceClaim. The
 	// scheduler will consider all resource requirements of that Pod and
@@ -1550,6 +1567,10 @@ The scheduler removes the Pod from the ReservedFor field because it cannot be sc
 all.
 
 ### Cluster Autoscaler
+
+<<[UNRESOLVED SIG Autoscaler]>>
+Is this sufficient for alpha?
+<<[/UNRESOLVED]>>
 
 When [Cluster
 Autoscaler](https://github.com/kubernetes/autoscaler/tree/master/cluster-autoscaler#cluster-autoscaler)
