@@ -86,6 +86,7 @@ SIG Architecture for cross-cutting KEPs).
     - [User permissions and quotas](#user-permissions-and-quotas)
     - [Usability](#usability)
 - [Design Details](#design-details)
+  - [Theory of operation](#theory-of-operation)
   - [Components](#components)
   - [State and communication](#state-and-communication)
   - [Custom parameters](#custom-parameters)
