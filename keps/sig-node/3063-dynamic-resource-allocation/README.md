@@ -929,32 +929,38 @@ gets defined inline in a Pod. Several of these steps may fail without changing
 the system state. They then must be retried until they succeed or something
 else changes in the system, like for example deleting objects.
 
+<<[UNRESOLVED pohly]>>
+Should the entire document use JSON field names instead of Go field names and structs?
+https://github.com/kubernetes/enhancements/pull/3064#discussion_r901950774
+<<[/UNRESOLVED]>>
+
+
 * **user** creates Pod with inline ResourceClaimTemplate
 * **resource claim controller** checks ResourceClaimTemplate and ResourceClass,
   then creates ResourceClaim with Pod as owner
 * if *immediate allocation*:
   * **resource driver** adds finalizer to claim to prevent deletion -> allocation in progress
-  * **resource driver** finishes allocation, sets `Allocation` -> claim ready for use by any pod
+  * **resource driver** finishes allocation, sets `claim.status.allocation` -> claim ready for use by any pod
 * if *pod is pending*:
   * **scheduler** filters nodes
   * if *delayed allocation and resource not allocated yet*:
     * if *at least one node fits pod*:
-      * **scheduler** creates or updates a `PodScheduling` object with `PotentialNodes=<all nodes that fit the pod>`
-      * **scheduler** picks one node, sets `ResourceClaimStatus.Scheduling.SelectedNode=<the chosen node>` and `ResourceClaimStatus.Scheduling.SelectedUser=<the pod being scheduled>`
-      * if *resource is available for `SelectedNode`*:
+      * **scheduler** creates or updates a `PodScheduling` object with `potentialNodes=<all nodes that fit the pod>`
+      * **scheduler** picks one node, sets `claim.status.scheduling.selectedNode=<the chosen node>` and `claim.status.scheduling.selectedUser=<the pod being scheduled>`
+      * if *resource is available for `claim.status.scheduling.selectedNode`*:s
         * **resource driver** adds finalizer to claim to prevent deletion -> allocation in progress
-        * **resource driver** finishes allocation, sets `Allocation` and the
-          intended user in `ReservedFor`, clears `SelectedNode` and `SelectedUser` -> claim ready for use and reserved
+        * **resource driver** finishes allocation, sets `claim.status.allocation` and the
+          intended user in `claim.status.reservedFor`, clears `claim.status.selectedNode` and `claim.status.selectedUser` -> claim ready for use and reserved
           for the pod
       * else *scheduler needs to know that it must avoid this and possibly other nodes*:
         * **resource driver** retrieves `PodScheduling` object from informer cache or API server
-        * **resource driver** sets `UnsuitableNodes` in `PodScheduling.Claims` for the claim
-        * **resource driver** clears `SelectedNode` -> next attempt by scheduler has more information and is more likely to succeed
+        * **resource driver** sets `podScheduling.claims[name=name of claim in pod].unsuitableNodes`
+        * **resource driver** clears `claim.status.selectedNode` -> next attempt by scheduler has more information and is more likely to succeed
     * else *pod cannot be scheduled*:
-      * **scheduler** may trigger deallocation of some claim with delayed allocation by setting `ResourceClaimStatus.Deallocate` to true
+      * **scheduler** may trigger deallocation of some claim with delayed allocation by setting `claim.status.deallocate` to true
       (see [pseudo-code above](#coordinating-resource-allocation-through-the-scheduler)) or wait
-  * if *pod not listed in `ReservedFor` yet* (can occur for immediate allocation):
-    * **scheduler** adds it to `ReservedFor`
+  * if *pod not listed in `claim.status.reservedFor` yet* (can occur for immediate allocation):
+    * **scheduler** adds it to `claim.status.reservedFor`
   * if *resource allocated and reserved*:
     * **scheduler** sets node in Pod spec -> Pod ready to run
     * **scheduler** deletes `PodScheduling` object if one exists
@@ -969,10 +975,10 @@ else changes in the system, like for example deleting objects.
   * **kubelet** asks driver to unprepare the resource
   * **kubelet** allows pod deletion to complete by clearing the `GracePeriod`
 * if *pod removed*:
-  * **garbage collector** deletes ResourceClaim -> adds `DeletionTimestamp` because of finalizer
-* if *ResourceClaim has `DeletionTimestamp` and `ReservedFor` is empty*:
+  * **garbage collector** deletes ResourceClaim -> adds `claim.deletionTimestamp` because of finalizer
+* if *ResourceClaim has `claim.deletionTimestamp` and `claim.status.reservedFor` is empty*:
   * **resource driver** deallocates resource
-  * **resource driver** clears finalizer and `Allocation`
+  * **resource driver** clears finalizer and `claim.status.allocation`
   * **API server** removes ResourceClaim
 
 The flow is similar for a ResourceClaim that gets created as a stand-alone
@@ -983,7 +989,7 @@ supported by the driver). The resource remains allocated as long as the
 ResourceClaim doesn't get deleted by the user.
 
 If a Pod references multiple claims managed by the same driver, then the driver
-can combine updating `UnsuitableNodes` for all of them, after considering all
+can combine updating `podScheduling.claims[*].unsuitableNodes` for all of them, after considering all
 claims.
 
 ### API
