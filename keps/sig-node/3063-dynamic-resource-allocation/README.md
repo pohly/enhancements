@@ -1154,22 +1154,16 @@ type ResourceClaimSpec struct {
 
 // AllocationMode describes whether a ResourceClaim gets allocated immediately
 // when it gets created (AllocationModeImmediate) or whether allocation is
-// delayed until it is needed for a Pod (AllocationModeDelayed). Other modes
+// delayed until it is needed for a Pod (AllocationModeWaitForFirstConsumer). Other modes
 // might get added in the future.
 type AllocationMode string
 
 const (
-
-<<[UNRESOLVED pohly]>>
-This probably should be "WaitForFirstConsumer", for consistency with volumes
-and because it is clearer what the claim is waiting for.
-<<[/UNRESOLVED]>>
-
-	// When a ResourceClaim has AllocationModeDelayed, allocation is
+	// When a ResourceClaim has AllocationModeWaitForFirstConsumer, allocation is
 	// delayed until a Pod gets scheduled that needs the ResourceClaim. The
 	// scheduler will consider all resource requirements of that Pod and
 	// trigger allocation for a node that fits the Pod.
-	AllocationModeDelayed AllocationMode = "Delayed"
+	AllocationModeWaitForFirstConsumer AllocationMode = "WaitForFirstConsumer"
 
 	// When a ResourceClaim has AllocationModeImmediate, allocation starts
 	// as soon as the ResourceClaim gets created. This is done without
@@ -1191,7 +1185,7 @@ type ResourceClaimStatus struct {
 
 	// Scheduling contains information that is only relevant while the
 	// scheduler and the resource driver are in the process of selecting a
-	// node for a Pod and the allocation mode is AllocationModeDelayed. The
+	// node for a Pod and the allocation mode is AllocationModeWaitForFirstConsumer. The
 	// resource driver should unset this when it has successfully allocated
 	// the resource.
 	Scheduling SchedulingStatus
