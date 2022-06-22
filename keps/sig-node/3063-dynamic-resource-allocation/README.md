@@ -530,8 +530,7 @@ attack against pods using those ResourceClaims, for example by overwriting
 their allocation result with a node selector that matches no node. A
 denial-of-service attack against the cluster and other pods is harder, but
 still possible. For example, frequently updating ResourceClaims could cause new
-scheduling attempts for pending pods. Filling up the `ReservedFor` field
-could exhaust etcd storage.
+scheduling attempts for pending pods.
 
 Another potential attack goal is to get pods with sensitive workloads to run on
 a compromised node. For pods that don't use special resources nothing changes
@@ -774,7 +773,7 @@ references them. In that case, a pending resource cannot be allocated until the
 parameters get recreated. An allocated resource must remain usable and
 deallocating it must be possible. To support this, resource drivers must copy
 all relevant information:
-- For usage, the `AllocationResult.Attributes` can be hold the copied information
+- For usage, the `AllocationResult.ResourceHandle` can be hold some copied information
   because the ResourceClaim and thus this field must exist.
 - For deallocation, drivers should use some other location to handle
   cases where a user force-deletes a ResourceClaim or the entire
@@ -842,6 +841,13 @@ and then the normal allocation of the resource takes place. Once the pod got
 deleted, the Kubernetes garbage collector will also delete the
 ResourceClaim.
 
+This mechanism documents ownership and serves as a fallback for scenarios where
+dynamic resource allocation gets disabled in a cluster (for example, during a
+downgrade). But it alone is not sufficient: for example, the job controller
+does not delete pods immediately when they have completed, which would keep
+their resources allocated. Therefore the resource controller watches for pods
+that have completed and releases their resource allocations.
+
 The difference between persistent and ephemeral resources for kube-scheduler
 and kubelet is that the name of the ResourceClaim needs to be determined
 differently: the name of an ephemeral ResourceClaim is `<pod>-<resource name in
@@ -850,6 +856,24 @@ persistent ResourceClaims or previous incarnations of the same ephemeral
 resource. This is the same approach that was chosen for [generic ephemeral
 volumes](https://github.com/kubernetes/enhancements/blob/master/keps/sig-storage/1698-generic-ephemeral-volumes/README.md).
 For a resource driver there is no difference.
+
+Different lifecycles can be combined with different allocation modes
+arbitrarily. Some combinations are more useful than others:
+
+```
++-----------+----------------------------------------------------------------------+
+|           |                             allocation mode                          |
+| lifecycle |             immediate              |   delayed                       |
++-----------+------------------------------------+---------------------------------+
+| regular   | starts the potentially             | avoids wasting resources        |
+| claim     | slow allocation as soon            | while they are not needed yet   |
+|           | as possible                        |                                 |
++-----------+------------------------------------+---------------------------------+
+| inline    | same benefit as above,             | resource allocated when needed, |
+| claim     | but ignores other pod constraints  | allocation coordinated by       |
+|           | during allocation                  | scheduler                       |
++-----------+------------------------------------+---------------------------------+
+```
 
 ### Coordinating resource allocation through the scheduler
 
@@ -1069,7 +1093,12 @@ type ResourceClaim struct {
 	// The driver must set a finalizer here before it attempts to allocate
 	// the resource. It removes the finalizer again when a) the allocation
 	// attempt has definitely failed or b) when the allocated resource was
-	// deallocated. This ensures that resources are not leaked.
+	// deallocated. This helps to ensure that resources are not leaked
+	// during normal operation of the cluster.
+	//
+	// It cannot prevent force-deleting a ResourceClaim by clearing its
+	// finalizers (something that users should never do without being aware
+	// of the consequences) or help when the entire cluster gets deleted.
 	//
 	// More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata
 	metav1.ObjectMeta
@@ -1181,7 +1210,20 @@ type ResourceClaimStatus struct {
 	// scheduler might have missed that step, for example because it
 	// doesn't support dynamic resource allocation or the feature was
 	// disabled.
+	//
+	// The maximum size is 32. This is an artificial limit to prevent
+	// a completely unbounded field in the API.
 	ReservedFor []metav1.OwnerReference
+
+	<<[UNRESOLVED pohly]>>
+	We will have to discuss use cases and real resource drivers that
+	support sharing before deciding on a) which limit is useful and
+	b) whether we need a different API that supports an unlimited
+	number of users.
+
+	Any solution that handles reservations differently will have to
+	be very careful about race conditions.
+	<<[/UNRESOLVED]>>
 }
 
 // SchedulingStatus contains information that is relevant while
@@ -1221,16 +1263,19 @@ type SchedulingStatus struct {
 
 // AllocationResult contains attributed of an allocated resource.
 type AllocationResult struct {
-	// Attributes contains arbitrary data returned by the driver after a
-	// successful allocation.  This data is passed to the driver for all
-	// operations involving the allocated resource. This is opaque for
-	// Kubernetes.  Driver documentation may explain to users how to
+	// ResourceHandle contains arbitrary data returned by the driver after a
+	// successful allocation. This is opaque for
+	// Kubernetes. Driver documentation may explain to users how to
 	// interpret this data if needed.
 	//
-	// The attributes must be sufficient to deallocate the resource because
-	// the ResourceClass might not be available anymore when deallocation
-	// starts.
-	Attributes map[string]string
+	// Resource drivers can use this to store some data directly or
+	// cross-reference some other place where information is stored.
+	// This data is guaranteed to be available when a Pod is about
+	// to run on a node, in contrast to the ResourceClass which
+	// may have been deleted in the meantime.
+	//
+	// The maximum size of this field is 16KiB.
+	ResourceHandle string
 
 	// This field will get set by the resource driver after it has
 	// allocated the resource driver to inform the scheduler where it can
@@ -1332,6 +1377,18 @@ type  ResourceRequirements {
    // The entries are the names of resources in PodSpec.ResourceClaims
    // that are used by the container.
    Claims []string
+
+   <<[UNRESOLVED]>>
+   If we need per-container parameters, then we will have to make
+   this a struct instead of a string and change the logic in kubelet
+   from "prepare one CDI file for all containers" to "prepare one CDI file
+   per container". This might imply changing how CDI information is
+   passed into runtimes (avoid writing files?).
+
+   The current approach is simpler, so we will need to consider
+   use cases carefully before changing the design.
+   <<[/UNRESOLVED]>>
+
    ...
 }
 
@@ -1342,6 +1399,16 @@ type PodResourceClaim struct {
 	// A name under which this resource can be referenced by the containers.
 	Name string
 
+	// Claim determines where to find the claim.
+	Claim ClaimSource
+}
+
+// ClaimSource either references one separate ResourceClaim by name or
+// embeds a template for a ResourceClaim, but never both.
+//
+// Additional options might get added in the future, so code using this
+// struct must error out when none of the options that it supports are set.
+ClaimSource struct {
 	// The resource is independent of the Pod and defined by
 	// a separate ResourceClaim in the same namespace as
 	// the Pod. Either this or Template must be set, but not both.
@@ -1429,13 +1496,18 @@ code](https://github.com/kubernetes/kubernetes/tree/master/pkg/controller/volume
 just with different types.
 
 kube-controller-manager will need new [RBAC
-permissions](https://github.com/kubernetes/kubernetes/commit/ff3e5e06a79bc69ad3d7ccedd277542b6712514b#diff-2ad93af2302076e0bdb5c7a4ebe68dd3188eee8959c72832181a7597417cd196) that allow creating ResourceClaims.
+permissions](https://github.com/kubernetes/kubernetes/commit/ff3e5e06a79bc69ad3d7ccedd277542b6712514b#diff-2ad93af2302076e0bdb5c7a4ebe68dd3188eee8959c72832181a7597417cd196) that allow creating and updating ResourceClaims.
 
 kube-controller-manager also removes `ReservedFor` entries that reference
-deleted objects. This is required for pods because kubelet does not have write
+deleted objects or pods that have completed ("Phase" is "done").
+This is required for pods because kubelet does not have write
 permission for ResourceClaimStatus. Pods as user is the common case, so special
 code based on a shared pod informer will handle it. All other user types can
 be handled through a generic informer or simply polling.
+
+In addition to updating `ReservedFor`, kube-controller-manager also deletes
+ResourceClaims that are owned by a completed pod to ensure that they
+get deallocated as soon as possible once they are not needed anymore.
 
 ### kube-scheduler
 
@@ -1737,9 +1809,9 @@ message NodePrepareResourceRequest {
   // The name of the Resource claim (ResourceClaim.meta.Name)
   // This field is REQUIRED.
   string claim_name = 3;
-  // Allocation attributes (AllocationResult.Attributes)
+  // Data provided by the resource driver controller during allocation (AllocationResult.ResourceHandle)
   // This field is REQUIRED.
-  map<string, string> attributes = 4;
+  string resource_handle = 4;
 }
 
 message NodePrepareResourceResponse {
