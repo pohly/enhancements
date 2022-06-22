@@ -1645,10 +1645,6 @@ all.
 
 ### Cluster Autoscaler
 
-<<[UNRESOLVED SIG Autoscaler]>>
-Is this sufficient for alpha?
-<<[/UNRESOLVED]>>
-
 When [Cluster
 Autoscaler](https://github.com/kubernetes/autoscaler/tree/master/cluster-autoscaler#cluster-autoscaler)
 encounters a pod that uses a resource claim, the autoscaler needs assistance by
