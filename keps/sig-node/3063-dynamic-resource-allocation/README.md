@@ -649,8 +649,8 @@ Several components must be implemented or modified in Kubernetes:
 - A new controller in kube-controller-manager which creates 
   ResourceClaims from Pod ResourceClaimTemplates, similar to
   https://github.com/kubernetes/kubernetes/tree/master/pkg/controller/volume/ephemeral.
-  It also removes the reservation entry for a user in a ResourceClaim (`ReservedFor` field)
-  when that user no longer exists.
+  It also removes the reservation entry for a user in `claim.status.reservedFor`,
+  the field that tracks who is allowed to use a claim, when that user no longer exists.
 - A kube-scheduler plugin must detect Pods which reference a
   ResourceClaim (directly or through a template) and ensure that the
   resource is allocated before the Pod gets scheduled, similar to
@@ -714,15 +714,15 @@ parameters.
 The entire state of a resource can be determined by looking at its
 ResourceClaim (see [API below](#api) for details), for example:
 
-- It is **allocated** if and only if `ResourceClaimStatus.Allocated` is non-nil and
+- It is **allocated** if and only if `claim.status.allocated` is non-nil and
   points to the `AllocationResult`, the struct where the resource drivers stores
   information about a successful allocation.
 
-- It is in use if and only if `ResourceClaimStatus.ReservedFor` contains one or
+- It is in use if and only if `claim.status.reservedFor` contains one or
   more users.  It does not matter whether those users, usually pods, are
   currently running because that could change at any time.
 
-- A resource is no longer needed when it has a `DeletionTimestamp`. It must not
+- A resource is no longer needed when `claim.deletionTimestamp` is set. It must not
   be deallocated yet when it is still in use.
 
 Some of the race conditions that need to be handled are:
@@ -758,7 +758,7 @@ Some of the race conditions that need to be handled are:
   the same ResourceClaim which may only get used by one pod at a time,
   only one pod can be scheduled.
 
-  Both schedulers try to add their pod to the `ReservedFor` field, but only the
+  Both schedulers try to add their pod to the `claim.status.reservedFor` field, but only the
   update that reaches the API server first gets stored. The other one fails
   with a conflict error and the scheduler which issued it knows that it must
   put the pod back into the queue, waiting for the ResourceClaim to become
@@ -789,7 +789,7 @@ references them. In that case, a pending resource cannot be allocated until the
 parameters get recreated. An allocated resource must remain usable and
 deallocating it must be possible. To support this, resource drivers must copy
 all relevant information:
-- For usage, the `AllocationResult.ResourceHandle` can be hold some copied information
+- For usage, the `claim.status.allocation.resourceHandle` can be hold some copied information
   because the ResourceClaim and thus this field must exist.
 - For deallocation, drivers should use some other location to handle
   cases where a user force-deletes a ResourceClaim or the entire
@@ -821,10 +821,10 @@ other resource requirements.
 
 ### Sharing a single ResourceClaim
 
-Pods reference resource claims in a new PodSpec.ResourceClaims list. Each
+Pods reference resource claims in a new `pod.spec.resourceClaims` list. Each
 resource in that list can then be made available to one or more containers in
 that Pod. Depending on the capabilities defined in the
-ResourceClaim by the driver, a ResourceClaim can be used exclusively
+`claim.status.allocation` by the driver, a ResourceClaim can be used exclusively
 by one pod at a time or an unlimited number of pods. Support for additional
 constraints (maximum number of pods, maximum number of nodes) could be
 added once there are use cases for those.
@@ -930,7 +930,7 @@ while <pod needs to be scheduled> {
             was not available on a node> {
       <randomly pick one of those resources and
        tell resource driver to deallocate it by setting `Deallocate` and
-       removing the pod from `ReservedFor` (if present there)>
+       removing the pod from `claim.status.reservedFor` (if present there)>
     }
   } else if <all resources allocated> {
     <schedule pod onto node>
@@ -980,12 +980,6 @@ The following steps shows how resource allocation works for a resource that
 gets defined inline in a Pod. Several of these steps may fail without changing
 the system state. They then must be retried until they succeed or something
 else changes in the system, like for example deleting objects.
-
-<<[UNRESOLVED pohly]>>
-Should the entire document use JSON field names instead of Go field names and structs?
-https://github.com/kubernetes/enhancements/pull/3064#discussion_r901950774
-<<[/UNRESOLVED]>>
-
 
 * **user** creates Pod with inline ResourceClaimTemplate
 * **resource claim controller** checks ResourceClaimTemplate and ResourceClass,
@@ -1508,14 +1502,14 @@ just with different types.
 kube-controller-manager will need new [RBAC
 permissions](https://github.com/kubernetes/kubernetes/commit/ff3e5e06a79bc69ad3d7ccedd277542b6712514b#diff-2ad93af2302076e0bdb5c7a4ebe68dd3188eee8959c72832181a7597417cd196) that allow creating and updating ResourceClaims.
 
-kube-controller-manager also removes `ReservedFor` entries that reference
+kube-controller-manager also removes `claim.status.reservedFor` entries that reference
 deleted objects or pods that have completed ("Phase" is "done").
 This is required for pods because kubelet does not have write
 permission for ResourceClaimStatus. Pods as user is the common case, so special
 code based on a shared pod informer will handle it. All other user types can
 be handled through a generic informer or simply polling.
 
-In addition to updating `ReservedFor`, kube-controller-manager also deletes
+In addition to updating `claim.status.reservedFor`, kube-controller-manager also deletes
 ResourceClaims that are owned by a completed pod to ensure that they
 get deallocated as soon as possible once they are not needed anymore.
 
@@ -1637,7 +1631,7 @@ gets set here and the scheduling attempt gets stopped for now. It will be
 retried when the ResourceClaim status changes.
 
 If all resources have been allocated already,
-the scheduler adds the Pod to the ReservedFor field of its ResourceClaims to ensure that
+the scheduler adds the Pod to the `claim.status.reservedFor` field of its ResourceClaims to ensure that
 no-one else gets to use those.
 
 If some resources are not allocated yet or reserving an allocated resource
