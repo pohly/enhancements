@@ -78,6 +78,7 @@ SIG Architecture for cross-cutting KEPs).
     - [Cluster add-on development](#cluster-add-on-development)
     - [Cluster configuration](#cluster-configuration)
     - [Partial GPU allocation](#partial-gpu-allocation)
+    - [Network-attached accelerator](#network-attached-accelerator)
     - [Combined setup of different hardware functions](#combined-setup-of-different-hardware-functions)
   - [Notes/Constraints/Caveats](#notesconstraintscaveats)
   - [Risks and Mitigations](#risks-and-mitigations)
@@ -474,6 +475,21 @@ The lifecycle of the resource
 allocation is tied to the lifecycle of the Pod.
 
 In production, a similar PodTemplateSpec in a Deployment will be used.
+
+#### Network-attached accelerator
+
+As a data center operator, I want to place accelerators in a separate enclosure
+where they can get connected to different compute nodes through [Compute
+Express Link™ (CXL™)](https://www.computeexpresslink.org/). This is more
+cost-effective because not all workloads need these accelerators and more
+flexible because worker nodes can be added or removed independently from
+accelerators.
+
+Jobs then compete for these accelerators by requesting them through a
+ResourceClaim. The kube-scheduler ensures that all required resources for a pod
+are reserved for it (CPU, RAM, and the ResourceClaim) before scheduling the pod
+onto a worker node. The resource driver then dynamically attaches the
+accelerator and detaches it again when the pod completes.
 
 #### Combined setup of different hardware functions
 
