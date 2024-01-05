@@ -1,0 +1,46 @@
+title: KEP Template
+kep-number: 4381
+authors:
+  - "@pohly"
+owning-sig: sig-node
+participating-sigs:
+  - sig-scheduling
+  - sig-autoscaling
+status: implementable
+creation-date: 2024-01-05
+reviewers:
+  - TBD
+  - "@alice.doe"
+approvers:
+  - TBD
+  - "@oscar.doe"
+
+see-also:
+  - "/keps/sig-node/3063-dynamic-resource-allocation"
+
+# The target maturity stage in the current dev cycle for this KEP.
+stage: alpha
+
+# The most recent milestone for which work toward delivery of this KEP has been
+# done. This can be the current (upcoming) milestone, if it is being actively
+# worked on.
+latest-milestone: "v1.30"
+
+# The milestone at which this feature was, or is targeted to be, at each stage.
+milestone:
+  alpha: "v1.30"
+
+# The following PRR answers are required at alpha release
+# List the feature gate name and the components for which it must be enabled
+feature-gates:
+  - name: DRANumericParameters
+    components:
+      - kube-apiserver
+      - kubelet
+      # There's code in kube-scheduler and kube-controller-manager, but it's
+      # inactive when the feature is disabled in the kube-apiserver.
+disable-supported: true
+
+# The following PRR answers are required at beta release
+metrics:
+  # - my_feature_metric
