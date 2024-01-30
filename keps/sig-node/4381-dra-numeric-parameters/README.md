@@ -224,6 +224,32 @@ demonstrate the interest in a KEP within the wider Kubernetes community.
 
 ## Proposal
 
+Each node publishes information about the nearly-opaque resources it currently
+has. That includes identifiers and counts, and enough information to find a
+schema description of the specific capabilities exposed by each resource. The
+schema is modeled as a set of fields, defined in the "capacity type" of a
+numeric model.
+
+Workloads make claims to request resources, expressing criteria that are used
+to match the resources published by nodes. As with core DRA, each DRA driver
+defines a CRD for the claim parameters. Some of the fields in that CRD are
+relevant for scheduling, others are only for configuring the hardware.
+
+The scheduler receives both the node capacity information and the claim
+parameters. It maps the relevant fields in the vendor parameter CRD to the
+"parameter type" of the numeric model, using a mapping that gets defined by the
+DRA driver developer.
+
+Now that the scheduler knows about the claim parameters, it can compare them
+against the node capacity and reserve some of that capacity for a pod that it
+is scheduling. It captures all information that the DRA driver kubelet plugin
+will need in the "allocation type" of the numeric model and stores that in the
+claim status. Then it schedules the pod.
+
+The DRA driver kubelet plugin parses that information when the pod is about to
+start. It checks that the hardware is still available and healthy, then
+configures it for the pod as specified in the allocation type.
+
 ### Publishing node capacity
 
 A numeric model defines a capacity type. The type has its own API group, kind
@@ -240,41 +266,48 @@ const KindName = "Capacity"
 const Version = "v1beta1"
 
 type Capacity struct {
-	metav1.ObjectMeta `json:"metadata,omitempty"`
-	metav1.TypeMeta `json:",inline"`
+	metav1.ObjectMeta
+	metav1.TypeMeta
 
-	Count int64 `json:"count"`
+	Count int64
 }
 ```
 
 The kubelet then combines all of this information in a new NodeResourceCapacity
 object which contains the JSON representation of a capacity type in a
 `runtime.RawExtension`. The kubelet itself never has to interpret that data.
+This enables running a newer control plane and DRA driver while keeping kubelet
+at an older version.
 
 ### Using numeric parameters as claim parameters
 
-The numeric model also defines a type for claim parameters. In the simple example
-above this is the same `Capacity` type, but more complex models will have
-a more complex capacity type and a simpler parameter type.
+The numeric model also defines a type for claim parameters. For the example
+above, that could be:
+```
+type Parameters struct {
+	metav1.ObjectMeta
+	metav1.TypeMeta
+
+	Required int64
+	Selector metav1.LabelSelector
+}
+```
+
+The `Parameters.Required` value gets compared against `Capacity.Count`. The
+`Selector` is matched with the labels defined in `Capacity.ObjectMeta`.
 
 When defining the CRD for the claim parameters, the driver developer replicates
 those fields from the numeric model which are relevant for the driver and adds
 custom validation. For a complex model, this can be a true subset of the fields
 in the parameter type. The validation can set bounds that are specific to the
-driver. One can think of this as "duck typing": the CRD doesn't need to include
-the numeric type, a subset of it just needs to behave like one.
-
-To enable extracting the numeric parameters, they must be located at a specific
-JSON path (e.g. "spec"). "Kind" and "apiVersion" must be included at that
-path. Users don't need to set those, the CRD can add them via defaults. This is
-best explained with an example:
+driver.
 
 ```
 const GroupName = "dra.e2e.example.com"
-const KindName = "ClaimParameter"
+const KindName = "ClaimParameters"
 const Version = "v1alpha1"
 
-type ClaimParameter struct {
+type ClaimParameters struct {
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 	metav1.TypeMeta   `json:",inline"`
 
@@ -282,84 +315,49 @@ type ClaimParameter struct {
 }
 
 type ClaimParameterSpec struct {
-	TypeMeta `json:",inline"` // Not metav1.TypeMeta! See below.
-
 	// +kubebuilder:default=1
 	// +kubebuilder:validation:Minimum=1
-    // +kubebuilder:validation:Maximum=16
-	Count int64 `json:"count,omitempty"`
+	// +kubebuilder:validation:Maximum=16
+	NumberOfFrobnicators int64 `json:"numberOfFrobnicators,omitempty"`
 
+	// Additional configuration parameters, in this case
+	// some environment variables for the container in which
+	// the Frobnicators are going to be used.
 	Env map[string]string `json:"env,omitempty"`
 }
-
-type TypeMeta struct {
-	// +kubebuilder:default=Capacity
-	// +kubebuilder:validation:Enum=Capacity
-	Kind string `json:"kind,omitempty"`
-
-	// +kubebuilder:default=counter.dra.config.k8s.io/v1alpha1
-	// +kubebuilder:validation:Enum=counter.dra.config.k8s.io/v1alpha1
-	APIVersion string `json:"apiVersion,omitempty"`
-}
 ```
 
-In this example, the driver supports the `Count` numeric parameter and adds
-environment variables as configuration parameters. There is a 1:1 relationship
-between the CRD type and the numeric type that it is using. Users define
-parameters like they would without numeric parameters:
+The following template is used to generate a
+`counter.dra.config.k8s.io/Parameters` description from a
+`dra.e2e.example.com/ClaimParameters` object:
 
 ```
-kind: ClaimParameter
-apiVersion: dra.e2e.example.com
-spec:
-  count: 10
-  env:
-    HELLO_WORLD: "Thanks for the fish."
+kind: Parameters
+apiVersion: counter.dra.config.k8s.io/v1alpha1
+Required: {{object.spec.numberOfFrobnicators}}
 ```
+
+The content in the `{{ ... }}` placeholder is a
+[CEL](https://kubernetes.io/docs/reference/using-api/cel/) expression. The
+`object` variable provides access to the fields in the vendor CRD. Note that
+this particular example driver doesn't use the `Selector` feature. Users never
+get to see it either.
 
 ### Notes/Constraints/Caveats
 
-For this proposal to work, kube-scheduler must have permission to read, list and
-watch arbitrary resources. This is necessary because it is not known in advance
-which CRDs will be used by DRA drivers.
+For this proposal to work, kube-scheduler must have permission to read, list
+and watch arbitrary resources. This is necessary because it is not known in
+advance which CRDs will be used by DRA drivers. When deploying a driver,
+suitable role bindings for
+[`system:kube-scheduler`](https://kubernetes.io/docs/reference/access-authn-authz/rbac/#core-component-roles)
+have to be added which grant read, watch and list permissions for the vendor
+CRD.
 
 This may change at runtime as classes get added or removed. To avoid repeated
 GET operations for those CRDs, dynamic informers will have to be used that get
 started and stopped as needed.
 
-### Risks and Mitigations
-
-Granting kube-scheduler permission to read arbitrary types could be used by an
-attacker to extract information. However, for that an attacker first would have
-to gain control of the scheduler, get it to execute API calls, and then
-retrieve the result. This seems like a low risk.
-
-Using a single NodeResourceCapacity object per node is simple and convenient
-also for admins, but might run into size limitations. This should not be a
-problem in practice because the number of drivers per node is expected to be
-low and the capacity information from each should be small. Limits for the
-JSON fragment can be introduced to prevent excessive sizes.
-
 ## Design Details
-
-### Decoding claim parameters
-
-Extracting the numeric parameters can be done without knowing the CRD:
-
-- Look up the resource based on group and kind with a REST mapper.
-
-- Retrieve the object with a `dynamic.Client` as an `unstructured.Unstructured`
-  instance (basically a nested map).
-
-- Retrieve the sub-map via the JSON path.
-
-- Re-encode that part as JSON with the normal `encode/json` package.  In the
-  example above, this will include `kind` and `apiVersion:
-  counter.dra.config.k8s.io` because those are the defaults and only allowed
-  values.
-
-- Decode into the numeric parameter with the apimachinery JSON decoder,
-  ignoring unknown fields like `env` in this example.
 
 ### ResourceClass extension
 
@@ -368,28 +366,27 @@ using this class:
 
 ```
 type ResourceClass struct {
-    ...
+	...
 
-    // If (and only if) allocation of claims using this class is handled
-    // via numeric parameters, then NumericParameters must list all claim
-    // parameter types that are allowed for claims.
-    NumericParameters []NumericParameterType
+	// If (and only if) allocation of claims using this class is handled
+	// via numeric parameters, then NumericParameters must list all claim
+	// parameter types that are allowed for claims.
+	NumericParameters []NumericParameterType
 }
 
 type NumericParameterType struct {
-	// APIGroup is the group for the resource being referenced. It is
-	// empty for the core API. This matches the group in the APIVersion
-	// that is used when creating the resources.
+	// APIVersion is the group and version for the resource being referenced
+	// as claim parameter.
 	// +optional
-	APIGroup string
+	APIVersion string
 
 	// Kind is the type of resource being referenced. This is the same
 	// value as in the parameter object's metadata.
 	Kind string
 
-	// FieldPath is a dot separarated JSON path that defines where in the
-	// parameter object the numeric parameters are embedded.
-	FieldPath string
+	// CELTemplate gets expanded with the claim parameter object as input.
+	// The version of that object will be as specified by APIVersion.
+	CELTemplate string
 
 	// Shareable is copied into the AllocationResult when a claim
 	// gets allocated.
@@ -399,39 +396,50 @@ type NumericParameterType struct {
 
 ### NodeResourceCapacity
 
-For each node, a NodeResourceCapacity objects gets created:
+For each node, one or more NodeResourceCapacity objects gets created:
 
 ```
-// NodeResourceCapacity gets published by kubelet. Its name
-// matches the name of the node and the node is the owner.
-//
-// Capacity may get added, but should not get removed because
-// it would make scheduling decisions based on the old capacity
-// invalid.
+// NodeResourceCapacity provides information about available
+// resources on individual nodes.
 type NodeResourceCapacity struct {
 	metav1.TypeMeta
 	// Standard object metadata
 	// +optional
 	metav1.ObjectMeta
 
-	// Resources contains information about the capacity
-	// reported by each DRA driver.
-	//
-	// +optional
-	Resources []DriverResources
-}
+	// NodeName identifies the node where the capacity is available.
+	// A field selector can be used to list only NodeResourceCapacity
+	// objects with a certain node name.
+	NodeName string
 
-type DriverResources struct {
-	// DriverName identifies the DRA which provided the capacity information.
+	// DriverName identifies the DRA driver providing the capacity information.
+	// A field selector can be used to list only NodeResourceCapacity
+	// objects with a certain driver name.
 	DriverName string
 
-	// ResourceInstances describes all discrete resource instances that are
-	// managed by the driver. Each entry must be an object of one of the
-	// supported numeric resource capacity types with kind, version and uid
-	// set. The uid only needs to be unique inside the node.
-	//
-	// +optional
-	ResourceInstances []runtime.RawExtension
+	// Instances describes discrete resources managed by the driver on
+	// the node. It is possible to create more than one NodeResourceCapacity
+	// object for the same node and driver if this array becomes to large
+	// for a single object.
+	Instances []NodeResourceInstance
+}
+
+// NodeResourceInstance describes one discrete resource instance.
+type NodeResourceInstance struct {
+	// ID is chosen by the driver to distinguish between different resource
+	// instances. It only needs to be unique for the driver and node.  In
+	// other words, the tuple of NodeName, DriverName, InstanceID needs to
+	// be unique in the cluster.
+	ID string
+
+	// APIVersion of the capacity type encoded in the data.
+	APIVersion string
+
+	// Kind of the capacity type encoded in the data.
+	Kind string
+
+	// Data holds attributes of the instance, encoded as JSON.
+	Data runtime.RawExtension
 }
 ```
 
@@ -440,7 +448,7 @@ allocated using that capacity while the kubelet is updating the
 NodeResourceCapacity object. The implementations of numeric models must handle
 scenarios where more resources are allocated than available. The DRA driver
 kubelet plugin must double-check that the allocated resources are still
-available when NodePrepareResource is called. If not, the pod cannot cannot
+available when NodePrepareResource is called. If not, the pod cannot
 start until the resource comes back.
 
 ### Builtin controllers
@@ -461,10 +469,13 @@ status of allocated claims).
 ##### Allocation
 
 When the dynamic resource plugin in kube-scheduler encounters a claim which,
-according to the class, uses numeric parameters, it looks up which builtin
-controller handles the claim parameters. That controller then is asked to
-provide suitable nodes and, once a node has been identified, to allocate the
-claim.
+according to the class, uses numeric parameters, it expands the CEL template
+and decodes into the capacity type, using `Kind` and `APIVersion` to determine
+that type. Then it looks up which builtin controller handles that claim
+parameter type.
+
+That controller then is asked to provide suitable nodes and, once a node has
+been identified, to allocate the claim.
 
 The controller itself must not modify the claim. Instead, it just returns the
 AllocationResult and marks resources as being in use. It is the responsibility
