@@ -71,9 +71,7 @@ SIG Architecture for cross-cutting KEPs).
   - [Publishing node capacity](#publishing-node-capacity)
   - [Using numeric parameters as claim parameters](#using-numeric-parameters-as-claim-parameters)
   - [Notes/Constraints/Caveats](#notesconstraintscaveats)
-  - [Risks and Mitigations](#risks-and-mitigations)
 - [Design Details](#design-details)
-  - [Decoding claim parameters](#decoding-claim-parameters)
   - [ResourceClass extension](#resourceclass-extension)
   - [NodeResourceCapacity](#noderesourcecapacity)
   - [Builtin controllers](#builtin-controllers)
@@ -346,7 +344,7 @@ get to see it either.
 ### Notes/Constraints/Caveats
 
 For this proposal to work, kube-scheduler must have permission to read, list
-and watch arbitrary resources. This is necessary because it is not known in
+and watch the custom claim parameter resources. This is necessary because it is not known in
 advance which CRDs will be used by DRA drivers. When deploying a driver,
 suitable role bindings for
 [`system:kube-scheduler`](https://kubernetes.io/docs/reference/access-authn-authz/rbac/#core-component-roles)
