@@ -68,18 +68,17 @@ SIG Architecture for cross-cutting KEPs).
   - [Goals](#goals)
   - [Non-Goals](#non-goals)
 - [Proposal](#proposal)
-  - [Publishing node capacity](#publishing-node-capacity)
-  - [Using numeric parameters as claim parameters](#using-numeric-parameters-as-claim-parameters)
+  - [Publishing node resources](#publishing-node-resources)
+  - [Using semantic parameters as claim parameters](#using-semantic-parameters-as-claim-parameters)
   - [Notes/Constraints/Caveats](#notesconstraintscaveats)
 - [Design Details](#design-details)
   - [ResourceClass extension](#resourceclass-extension)
-  - [NodeResourceCapacity](#noderesourcecapacity)
+  - [NodeResources](#noderesources)
   - [Builtin controllers](#builtin-controllers)
       - [Initialization](#initialization)
       - [Allocation](#allocation)
   - [Deallocation](#deallocation)
   - [Immediate allocation](#immediate-allocation)
-  - [Extending kube-scheduler or CA with custom numeric model](#extending-kube-scheduler-or-ca-with-custom-numeric-model)
   - [Simulation with CA](#simulation-with-ca)
   - [Test Plan](#test-plan)
       - [Prerequisite testing updates](#prerequisite-testing-updates)
@@ -160,19 +159,21 @@ allocation of all pending claims and the pod being scheduled onto a node.
 
 This approach poses a problem for [Cluster
 Autoscaler](https://github.com/kubernetes/autoscaler) (CA) because it cannot
-simulate the effect of allocating or deallocating claims. "Numeric parameters"
+simulate the effect of allocating or deallocating claims. "Semantic parameters"
 is an extension of DRA that addresses this by making claim parameters less
-opaque. "Numeric models" define how resource capacity per node can be published
+opaque. "Semantic models" define how resource capacity per node can be published
 and the claim parameters that allocate some of that capacity for a claim.
 
-This KEP describes the core changes needed for this. Specific numeric models
-get defined in separate KEPs. Developers will be able to add their own numeric
-models by recompiling kube-scheduler and/or CA without having to modify any of
-the upstream code.
+This KEP describes the core changes needed for this. Specific semantic models
+get defined in separate KEPs. The types defined by these models become
+part of the resource.k8s.io API. Therefore developers who want to extend
+a scheduler with some additional model have to modify the apiserver.
 
-When opting into using numeric parameters for their DRA driver, driver
-developers no longer need to provide their own controller. Kubernetes takes
-over allocating and deallocating claims.
+When opting into using semantic parameters for their DRA driver, driver
+developers no longer need to provide a control plane controller which
+handles claim allocation. Instead, they need to provide a CRD controller
+which translates from their custom claim parameters CRD into the parameter
+object understood by Kubernetes.
 
 Scheduling performance is expected to become better compared to using the
 PodSchedulingContext. However, supporting CA is the main reason for this KEP.
@@ -198,12 +199,8 @@ demonstrate the interest in a KEP within the wider Kubernetes community.
   simulate them.
 
 - Allow DRA driver developers to provide a user experience that is similar to
-  the one possible without numeric parameters. Ideally, users should not notice
-  at all that a driver is using numeric parameters under the hood.
-
-- Support adding and versioning multiple different numeric models without
-  having to modify the implementation of DRA or the numeric parameters
-  extension.
+  the one possible without semantic parameters. Ideally, users should not notice
+  at all that a driver is using semantic parameters under the hood.
 
 - Keep the core DRA functionality from [KEP
   #3063](https://github.com/kubernetes/enhancements/issues/3063) working as
@@ -213,153 +210,136 @@ demonstrate the interest in a KEP within the wider Kubernetes community.
 
 ### Non-Goals
 
-- Support numeric class parameters. They remain opaque and can be used to
+- Support semantic class parameters. They remain opaque and can be used to
   define configuration of resources, but must not affect where a claim can be
   allocated.
 
-- Define exactly one numeric model that covers all current and future resources.
+- Define exactly one semantic model that covers all current and future resources.
   There cannot be a "one size fits all" solution.
 
 ## Proposal
 
 Each node publishes information about the nearly-opaque resources it currently
-has. That includes identifiers and counts, and enough information to find a
-schema description of the specific capabilities exposed by each resource. The
-schema is modeled as a set of fields, defined in the "capacity type" of a
-numeric model.
+has. Each driver manages one or more resource instance per node. An instance
+could be a single discreet piece of hardware like a PCI card or a pool of such
+cards. Each instance has certain attributes. These can be qualitative (labels
+or fields for comparison) and quantitative (capacity that gets reduced when
+allocated for a claim). These attributes are described by the "attributes type"
+of the semantic models. Each instance can combine attributes from different
+semantic models. This way, each model can focus on one aspect, like counting
+items or selection via labels.
 
-Workloads make claims to request resources, expressing criteria that are used
-to match the resources published by nodes. As with core DRA, each DRA driver
-defines a CRD for the claim parameters. Some of the fields in that CRD are
-relevant for scheduling, others are only for configuring the hardware.
+Workloads make claims to request resources with claim parameters that use CRDs
+provided together with a DRA driver. As soon as such a custom CR is created, a
+CRD controller of the DRA driver must convert it into a in-tree claim parameter
+object that uses the "parameter types" defined by the semantic models.
 
-The scheduler receives both the node capacity information and the claim
-parameters. It maps the relevant fields in the vendor parameter CRD to the
-"parameter type" of the numeric model, using a mapping that gets defined by the
-DRA driver developer.
+The scheduler receives both the node resource information and the claim
+parameters. It uses the in-tree claim parameters to identify and allocate
+suitable resources. It captures all information that the DRA driver kubelet
+plugin will need in the "allocation types" of the semantic models and stores
+that in the claim status. Then it schedules the pod.
 
-Now that the scheduler knows about the claim parameters, it can compare them
-against the node capacity and reserve some of that capacity for a pod that it
-is scheduling. It captures all information that the DRA driver kubelet plugin
-will need in the "allocation type" of the numeric model and stores that in the
-claim status. Then it schedules the pod.
-
-The DRA driver kubelet plugin parses that information when the pod is about to
+The DRA driver kubelet plugin receives that information when the pod is about to
 start. It checks that the hardware is still available and healthy, then
-configures it for the pod as specified in the allocation type.
+configures it for the pod as specified in the allocation types.
 
-### Publishing node capacity
+### Publishing node resources
 
-A numeric model defines a capacity type. The type has its own API group, kind
-and potentially different versions. It must support encoding and decoding JSON
-with an apimachinery scheme. The kubelet queries the registered DRA driver
-kubelet plugins for capacity information through a new gRPC call. Drivers
-respond by returning the JSON encoding of this capacity type. A streaming gRPC
-API allows drivers to update the capacity information.
+A semantic model defines an attributes type. This is a Go type that gets
+embedded inside the resource.k8s.io API, not a separate API kind. The kubelet
+queries the registered DRA driver kubelet plugins for resource information
+through a new gRPC call. A streaming gRPC API allows drivers to update the
+capacity information.
 
-For example, a simple counter could be described as:
+For example, a simple counter could be described in a `counter` Go package as:
 ```
-const GroupName = "counter.dra.config.k8s.io"
-const KindName = "Capacity"
-const Version = "v1beta1"
-
-type Capacity struct {
+type Attributes struct {
+    // Some meta information just for logging and debugging. Not used for counting.
 	metav1.ObjectMeta
-	metav1.TypeMeta
 
 	Count int64
 }
 ```
 
-The kubelet then combines all of this information in a new NodeResourceCapacity
-object which contains the JSON representation of a capacity type in a
-`runtime.RawExtension`. The kubelet itself never has to interpret that data.
-This enables running a newer control plane and DRA driver while keeping kubelet
-at an older version.
+The kubelet then publishes this information in a new NodeResources object on
+behalf of the driver. This implies that kubelet, DRA driver, and apiserver must
+all support the same semantic models and the same versions of them. It might be
+possible to support version skew (= keeping kubelet at an older version than
+the control plane and the DRA drivers) in the future, but currently this is out
+of scope.
 
-### Using numeric parameters as claim parameters
+### Using semantic parameters as claim parameters
 
-The numeric model also defines a type for claim parameters. For the example
+The semantic model also defines a type for claim parameters. For the example
 above, that could be:
 ```
 type Parameters struct {
-	metav1.ObjectMeta
-	metav1.TypeMeta
-
 	Required int64
-	Selector metav1.LabelSelector
 }
 ```
 
-The `Parameters.Required` value gets compared against `Capacity.Count`. The
-`Selector` is matched with the labels defined in `Capacity.ObjectMeta`.
+The `Parameters.Required` value gets compared against `Attributes.Count`.
 
-When defining the CRD for the claim parameters, the driver developer replicates
-those fields from the numeric model which are relevant for the driver and adds
-custom validation. For a complex model, this can be a true subset of the fields
-in the parameter type. The validation can set bounds that are specific to the
-driver.
+Suppose a vendor has a CRD which allows requesting a certain number of `frobnicators`:
 
 ```
-const GroupName = "dra.e2e.example.com"
-const KindName = "ClaimParameters"
-const Version = "v1alpha1"
-
-type ClaimParameters struct {
-	metav1.ObjectMeta `json:"metadata,omitempty"`
-	metav1.TypeMeta   `json:",inline"`
-
-	Spec ClaimParameterSpec `json:"spec"`
-}
-
-type ClaimParameterSpec struct {
-	// +kubebuilder:default=1
-	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:validation:Maximum=16
-	NumberOfFrobnicators int64 `json:"numberOfFrobnicators,omitempty"`
-
-	// Additional configuration parameters, in this case
-	// some environment variables for the container in which
-	// the Frobnicators are going to be used.
-	Env map[string]string `json:"env,omitempty"`
-}
+kind: ClaimParameters
+apiVersion: dra.frobincatorInc.example.com/v1alpha1
+name: my-claim-parameters
+uid: abcd
+resourceVersion: 123
+spec:
+  requiredFrobincators: 100
 ```
 
-The following template is used to generate a
-`counter.dra.config.k8s.io/Parameters` description from a
-`dra.e2e.example.com/ClaimParameters` object:
-
+The vendor CRD controller needs to sync this CRs into one in-tree object:
 ```
-kind: Parameters
-apiVersion: counter.dra.config.k8s.io/v1alpha1
-Required: {{object.spec.numberOfFrobnicators}}
+kind: ResourceClaimParameters
+apiVersion: resource.k8s.io/v1alpha2
+name: frobnicator-claim-parameters-XJD8$
+generateName: frobincator-claim-parameters-
+ownersReference:
+  <the CR for automatic deletion>
+parameters:
+  - generatedFrom: // used to identify the source resource
+    kind: ClaimParameters
+    apiGroup: dra.frobincatorInc.example.com
+    name: my-claim-parameters
+    uid: abcd
+    resourceVersion: 123
+  - parameters:
+    - counter:
+      required: 100
 ```
-
-The content in the `{{ ... }}` placeholder is a
-[CEL](https://kubernetes.io/docs/reference/using-api/cel/) expression. The
-`object` variable provides access to the fields in the vendor CRD. Note that
-this particular example driver doesn't use the `Selector` feature. Users never
-get to see it either.
 
 ### Notes/Constraints/Caveats
 
 For this proposal to work, kube-scheduler must have permission to read, list
-and watch the custom claim parameter resources. This is necessary because it is not known in
-advance which CRDs will be used by DRA drivers. When deploying a driver,
-suitable role bindings for
+and watch the custom claim parameter resources. This is necessary because it is
+not known in advance which CRDs will be used by DRA drivers. When deploying a
+driver, suitable role bindings for
 [`system:kube-scheduler`](https://kubernetes.io/docs/reference/access-authn-authz/rbac/#core-component-roles)
 have to be added which grant read, watch and list permissions for the vendor
 CRD.
 
-This may change at runtime as classes get added or removed. To avoid repeated
-GET operations for those CRDs, dynamic informers will have to be used that get
-started and stopped as needed.
+The scheduler does not need to interpret the custom data in those CRDs. It
+still needs to read them for two purposes:
+- Ensure that the in-tree claim parameters match the vendor claim parameters
+  reference by the claim and are not out-dated.
+- Include a snapshot of claim and class parameters in the allocation result,
+  to ensure that configuration parameters are available when the DRA driver
+  needs them.
+
+The types that the scheduler needs to watch may change at runtime as classes
+get added or removed. To avoid repeated GET operations for those CRDs, dynamic
+informers will have to be used that get started and stopped as needed.
 
 ## Design Details
 
 ### ResourceClass extension
 
-A new, optional field in ResourceClass enables numeric parameters for claims
+A new, optional field in ResourceClass enables semantic parameters for claims
 using this class:
 
 ```
@@ -367,24 +347,23 @@ type ResourceClass struct {
 	...
 
 	// If (and only if) allocation of claims using this class is handled
-	// via numeric parameters, then NumericParameters must list all claim
-	// parameter types that are allowed for claims.
-	NumericParameters []NumericParameterType
+	// via numeric parameters, then ParameterTypes describes those
+	// parameters. A driver might support multiple different CRDs for
+	// its claims.
+	ParameterTypes []SemanticParameterType
 }
 
-type NumericParameterType struct {
-	// APIVersion is the group and version for the resource being referenced
-	// as claim parameter.
+// SemanticParameterType describes one resource that may be used for
+// claim parameters of a class which uses semantic parameters.
+type SemanticParameterType struct {
+	// APIGroup is the group for the resource being referenced. It is
+	// empty for the core API. This matches the group in the APIVersion
+	// that is used when creating the resources.
 	// +optional
-	APIVersion string
-
+	APIGroup string
 	// Kind is the type of resource being referenced. This is the same
 	// value as in the parameter object's metadata.
 	Kind string
-
-	// CELTemplate gets expanded with the claim parameter object as input.
-	// The version of that object will be as specified by APIVersion.
-	CELTemplate string
 
 	// Shareable is copied into the AllocationResult when a claim
 	// gets allocated.
@@ -392,31 +371,31 @@ type NumericParameterType struct {
 }
 ```
 
-### NodeResourceCapacity
+### NodeResources
 
-For each node, one or more NodeResourceCapacity objects gets created:
+For each node, one or more NodeResources objects gets created:
 
 ```
-// NodeResourceCapacity provides information about available
+// NodeResources provides information about available
 // resources on individual nodes.
-type NodeResourceCapacity struct {
+type NodeResources struct {
 	metav1.TypeMeta
 	// Standard object metadata
 	// +optional
 	metav1.ObjectMeta
 
 	// NodeName identifies the node where the capacity is available.
-	// A field selector can be used to list only NodeResourceCapacity
+	// A field selector can be used to list only NodeResources
 	// objects with a certain node name.
 	NodeName string
 
 	// DriverName identifies the DRA driver providing the capacity information.
-	// A field selector can be used to list only NodeResourceCapacity
+	// A field selector can be used to list only NodeResources
 	// objects with a certain driver name.
 	DriverName string
 
 	// Instances describes discrete resources managed by the driver on
-	// the node. It is possible to create more than one NodeResourceCapacity
+	// the node. It is possible to create more than one NodeResources
 	// object for the same node and driver if this array becomes to large
 	// for a single object.
 	Instances []NodeResourceInstance
@@ -430,20 +409,19 @@ type NodeResourceInstance struct {
 	// be unique in the cluster.
 	ID string
 
-	// APIVersion of the capacity type encoded in the data.
-	APIVersion string
+    // Attributes describe the instance.
+	Attributes []InstanceAttributes
+}
 
-	// Kind of the capacity type encoded in the data.
-	Kind string
-
-	// Data holds attributes of the instance, encoded as JSON.
-	Data runtime.RawExtension
+// InstanceAttributes must have one and only one field set.
+type InstanceAttributes struct {
+	<one pointer per semantic model>
 }
 ```
 
-If a driver needs to remove capacity, then there is a risk that a claim gets
+If a driver needs to reduce resource capacity, then there is a risk that a claim gets
 allocated using that capacity while the kubelet is updating the
-NodeResourceCapacity object. The implementations of numeric models must handle
+NodeResources object. The implementations of semantic models must handle
 scenarios where more resources are allocated than available. The DRA driver
 kubelet plugin must double-check that the allocated resources are still
 available when NodePrepareResource is called. If not, the pod cannot
@@ -452,7 +430,7 @@ start until the resource comes back.
 ### Builtin controllers
 
 `k8s.io/dynamic-resource-allocation/builtincontroller` defines Go interfaces
-that need to be implemented by a numeric model to handle tracking of resource
+that need to be implemented by a semantic model to handle tracking of resource
 usage and allocation/deallocation. The package also has a global registry of
 builtin controllers.
 
@@ -460,14 +438,14 @@ builtin controllers.
 
 All registered builtin controllers get activated when kube-scheduler or CA
 start. At this point they start building an internal model of which resources
-are available (based on those entries in NodeResourceCapacity objects that they
+are available (based on those entries in NodeResources objects that they
 are responsible for) and how those resources are already used (based on the
 status of allocated claims).
 
 ##### Allocation
 
 When the dynamic resource plugin in kube-scheduler encounters a claim which,
-according to the class, uses numeric parameters, it expands the CEL template
+according to the class, uses semantic parameters, it expands the CEL template
 and decodes into the capacity type, using `Kind` and `APIVersion` to determine
 that type. Then it looks up which builtin controller handles that claim
 parameter type.
@@ -493,26 +471,26 @@ objects may be deleted and the claim has to remain usable. To achieve this,
 during allocation the entire class and claim parameter objects must be stored
 in the allocation result together with enough information for the DRA kubelet
 plugin to determine which resources were reserved for the claim. This is again
-specific to the numeric model, so each numeric model has to define an
+specific to the semantic model, so each semantic model has to define an
 allocation result type that gets populated by the builtin controller and
 consumed by the DRA kubelet plugin.
 
 As usual, allocated claims must have a finalizer set that prevents users from
 accidentally deleting a claim that is or might be in use. The special
-"numeric.dra.k8s.io/delete-protection" finalizer is used. This is relevant for
+"semantic.dra.k8s.io/delete-protection" finalizer is used. This is relevant for
 deallocation.
 
 ### Deallocation
 
 Deallocation is handled by kube-controller-manager when its claim controller
 observes that a claim is no longer in use *and* the claim has the special
-"numeric.dra.k8s.io/delete-protection" finalizer. This finalizer tells the
+"semantic.dra.k8s.io/delete-protection" finalizer. This finalizer tells the
 controller that it may clear the allocation result directly instead of setting
 the `DeletionRequested` field, which is what it normally would do.
 
 Updating the claim during deallocation will be observed by kube-scheduler and
 tells it that it can use the capacity set aside for the claim
-again. kube-controller-manager itself doesn't need to support specific numeric
+again. kube-controller-manager itself doesn't need to support specific semantic
 models.
 
 ### Immediate allocation
@@ -521,16 +499,6 @@ Because there is no separate controller anymore, claims with immediate
 allocation will only get allocated once there is a pod which needs them. The
 remaining semantic difference compared to delayed allocation is that claims
 with immediate allocation remain allocated when no longer in use.
-
-### Extending kube-scheduler or CA with custom numeric model
-
-In-tree numeric models get added conditionally based on one feature gate per
-model. Developers can build their own kube-scheduler and/or CA binary by adding
-a separate file somewhere to the upstream source code in which an `init`
-function registers the builtin controller in the
-`k8s.io/dynamic-resource-allocation/builtincontroller` registry. This
-additional controller then will be called the same way as the in-tree
-implementations.
 
 ### Simulation with CA
 
@@ -603,7 +571,7 @@ Adding or removing nodes is not part of the interface. Instead, new unknown
 nodes need to be detected in `Filter`:
 - When creating a fictional node during simulation from an existing node, CA
   needs to add a special annotation `autoscaling.k8s.io/node-resource-capacity`
-  with the name of the original node. Then the NodeResourceCapacity object
+  with the name of the original node. Then the NodeResources object
   under that name, i.e. from the original node, gets used also for the
   fictional node. The assumption is that the new node will have the same
   hardware and configuration and thus the same capacity as the old one.
@@ -706,14 +674,12 @@ We expect no non-infra related flakes in the last month as a GA graduation crite
 
 ### Upgrade / Downgrade Strategy
 
-DRA drivers must persist data in NodeResourceCapacity using the oldest version
-of the numeric types that a user might downgrade to. The DRA driver can get
-downgraded together with the cluster to refresh that data using an older
-version, if necessary. DRA driver developers have to inform admins about their
-guidelines for upgrades and downgrades.
-
-The same applies to the allocation result. DRA drivers must support whatever
-version of the numeric type might be stored there.
+Because of the strongly-typed versioning of resource attributes and allocation
+results, the gRPC interface between kubelet and the DRA driver is tied to the
+version of the supported semantic models. A DRA driver has to implement all
+gRPC interfaces that might be used by older releases of kubelet. The same
+applies when upgrading kubelet while the DRA driver remains at an older
+version.
 
 ### Version Skew Strategy
 
@@ -739,7 +705,7 @@ No.
 
 ###### Can the feature be disabled once it has been enabled (i.e. can we roll back the enablement)?
 
-Disabling the feature will remove the NodeResourceCapacity type and prevent
+Disabling the feature will remove the NodeResources type and prevent
 adding the `NumericParameters` field to new classes. Existing classes with this
 field set will continue to have it. The effect will be that no claims using
 numeric parameters get allocated because there is no controller to handle
