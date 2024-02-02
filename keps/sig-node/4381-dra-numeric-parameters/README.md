@@ -286,9 +286,10 @@ Suppose a vendor has a CRD which allows requesting a certain number of `frobnica
 ```
 kind: ClaimParameters
 apiVersion: dra.frobincatorInc.example.com/v1alpha1
-name: my-claim-parameters
-uid: abcd
-resourceVersion: 123
+metadata:
+  name: my-claim-parameters
+  uid: abcd
+  resourceVersion: 123
 spec:
   requiredFrobincators: 100
 ```
@@ -297,19 +298,17 @@ The vendor CRD controller needs to sync this CRs into one in-tree object:
 ```
 kind: ResourceClaimParameters
 apiVersion: resource.k8s.io/v1alpha2
-name: frobnicator-claim-parameters-XJD8$
-generateName: frobincator-claim-parameters-
-ownersReference:
-  <the CR for automatic deletion>
+metadata:
+  name: frobnicator-claim-parameters
+  namespace: default
+generatedFrom:
+  kind: ClaimParameters
+  apiGroup: dra.frobincatorInc.example.com
+  name: my-claim-parameters
+  resourceVersion: 123
+  uid: abcd
 parameters:
-  - generatedFrom: // used to identify the source resource
-    kind: ClaimParameters
-    apiGroup: dra.frobincatorInc.example.com
-    name: my-claim-parameters
-    uid: abcd
-    resourceVersion: 123
-  - parameters:
-    - counter:
+  - counter:
       required: 100
 ```
 
