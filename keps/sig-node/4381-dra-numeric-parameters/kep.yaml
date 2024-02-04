@@ -33,12 +33,7 @@ milestone:
 # The following PRR answers are required at alpha release
 # List the feature gate name and the components for which it must be enabled
 feature-gates:
-  - name: DRANumericParameters
-    components:
-      - kube-apiserver
-      - kubelet
-      # There's code in kube-scheduler and kube-controller-manager, but it's
-      # inactive when the feature is disabled in the kube-apiserver.
+  # DynamicResourceAllocation, same as for DRA without this KEP
 disable-supported: true
 
 # The following PRR answers are required at beta release
