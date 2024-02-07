@@ -150,46 +150,75 @@ Items marked with (R) are required *prior to targeting to a milestone / release*
 
 ## Summary
 
-Dynamic Resource Allocation uses parameters for resources that are completely
-opaque to core Kubernetes. They get interpreted by the DRA driver's controller
-(for allocating claims) and the DRA drivers' kubelet plugin (for configuring
-the resource on a node). During scheduling of a pod, kube-scheduler and the DRA
-driver controller(s) that handle claims used by the pod communicate through the
-apiserver by updating the PodSchedulingContext object, ultimately leading to
+Dynamic Resource Allocation (DRA) was added to Kubernetes as an alpha feature in v1.26. It defines an alternative to the traditional device-plugin API for requesting access to third-party resources.
+
+
+By design, DRA uses parameters for resources that are completely
+opaque to core Kubernetes. They get interpreted by a DRA driver's controller
+(for allocating claims) and a DRA driver's kubelet plugin (for configuring
+resources a node). During scheduling of a pod, the kube-scheduler and any DRA
+driver controller(s) handling claims for the pod communicate back-and-forth through the
+apiserver by updating a `PodSchedulingContext` object, ultimately leading to the
 allocation of all pending claims and the pod being scheduled onto a node.
 
-This approach poses a problem for [Cluster
-Autoscaler](https://github.com/kubernetes/autoscaler) (CA) because it cannot
-simulate the effect of allocating or deallocating claims. "Semantic parameters"
-is an extension of DRA that addresses this by making claim parameters less
-opaque. It also enables the scheduler to allocate claims rapidly, without
-back-and-forth communication with DRA drivers.
+This approach poses a problem for the [Cluster
+Autoscaler](https://github.com/kubernetes/autoscaler) (CA) or for any higher
+level controller that needs to make decisions for a group of pods (e.g. a job
+scheduler). It cannot simulate the effect of allocating or deallocating
+claims over time. Only the third-party DRA
+drivers have the information available to do this.
 
-The underlying concept is that drivers manage resources. Each resource has a
-set of attributes which describe the resource and its capabilities, for example
-the ability to provide a certain programming API at a specific version. Each
-resource may have a set of resource dimensions which are requestable by
-workloads, for example a certain amount of RAM. A resource might also be a pool
-of instances with the same capabilities. Then the resource dimension is the
-amount of those instances.
+"Semantic parameters" is an extension to DRA that addresses this problem by
+making claim parameters less opaque. Instead of managing the semantics of all
+claim parameters themselves, drivers now manage resources and describe them
+using a specific "semantic model" pre-defined by Kubernetes. This allows
+components aware of this "semantic model" to make decisions about these
+resources without outsourcing them to some third-party controller. For example,
+the scheduler is now able to allocate claims rapidly, without back-and-forth
+communication with DRA drivers.
 
-Information about available resources get published in NodeResourceSlice
-objects in the apiserver.
+At a high-level, this extension takes the following form:
 
-When a user wants to consume resources, they create a ResourceClaim, which
-references a claim parameter object. That object defines how much resources are
-needed and which capabilities they must have. Typically that object is using a
-vendor provided type which might also supports configuration parameters that
-are not needed for resource allocation.
+* DRA drivers publish their available resources in the form of a
+  `NodeResourceSlice` object on a node-by-node basis according to one of the
+  builtin "semantic models" known to Kubernetes. This object is stored in the
+  API server and available to the scheduler (or Cluster Autoscaler) to query
+  when a resource request comes in later on.
 
-A driver-specific process "resolves" that request into a canonical form (the
-ResourceClaimParameters type) which components such as a scheduler or
-autoscaler can evaluate against the NodeResourceSlices of candidate nodes,
-without knowing exactly what is being requested.
+* When a user wants to consume a resource, they create a `ResourceClaim`,
+  which, in turn, references a claim parameters object. This object defines how
+  many resources are needed and which capabilities they must have. Typically, it
+  is defined using a vendor-specific type which might also support configuration
+  parameters (i.e. parameters that are *not* needed for allocation but *are*
+  needed for configuration).
 
-When a workload starts, an on-node driver is responsible for making the
-requested device(s) active in the Pod, according to the resource choices made
-by the scheduler.
+* With such a claim in place, DRA drivers "resolve" the contents of any
+  vendor-specific claim parameters into a canonical form (i.e. a generic
+  `ResourceClaimParameters` object in the `resource.k8s.io` API group) which
+  the scheduler (or Cluster Autoscaler) can evaluate against the
+  `NodeResourceSlice` of any candidate nodes without knowing exactly what is
+  being requested. They then use this information to help decide which node to
+  schedule a pod on (as well as allocate resources from its `NodeResourceSlice`
+  in the process).
+
+* Once a node is chosen and a workload is sent to it, DRA drivers are
+  responsible for injecting any allocated resources into the Pod, according to
+  the resource choices made by the scheduler. This includes applying any
+  configuration information attached to the vendor-specific claim parameters
+  object used in the request.
+
+In this KEP, we define a single "semantic model" called
+`PartitionableResources`, and use it throughout the discussion to help describe
+the framework as a whole. This model is a natural extension to the API provided
+by the traditional device-plugin, which supports advertising resources as a
+finite set of opaque strings. The major difference being that under the new
+model, one can attach a list of attributes to those opaque strings which the
+scheduler can use to select a particular resource for allocation. Additionally,
+each resource can be divided into a set of pre-defined partitions, each with
+their own set of unique attributes attached to them. In this way, requests for
+resources can be satisfied either by a complete resource instance or by one of
+its partitions.  This model may get enhanced in the future and/or other models
+might get added as needed.
 
 ## Motivation
 
@@ -217,10 +246,6 @@ demonstrate the interest in a KEP within the wider Kubernetes community.
 
 ### Non-Goals
 
-- Support semantic class parameters. They remain opaque and can be used to
-  define configuration of resources, but must not affect where a claim can be
-  allocated.
-
 - Scheduling performance is expected to become better compared to using the
   PodSchedulingContext. However, this is not the reason for this KEP.
 
@@ -229,113 +254,184 @@ demonstrate the interest in a KEP within the wider Kubernetes community.
 
 ### Publishing node resources
 
-The kubelet publishes NodeResourceSlices with content provided by the different
-drivers running on the node. Access control through the node authorizer ensures
-that one kubelet is not allowed to create or modify NodeResourceSlices
-belonging to other nodes.
+The kubelet publishes NodeResourceSlices to the API server with content
+provided by DRA drivers running on each node. Access control through the node
+authorizer ensures that the kubelet running on one node is not allowed to
+create or modify NodeResourceSlices belonging to other nodes.
 
 NodeResourceSlices are published separately for each driver, using a version of
-the API that matches what that driver is using. This implies that kubelet, DRA
-driver, and apiserver must all support that same API version. It might be
+the API that matches what that driver is using. This implies that the kubelet, DRA
+driver, and apiserver must all support the *same* API version. It might be
 possible to support version skew (= keeping kubelet at an older version than
 the control plane and the DRA drivers) in the future, but currently this is out
 of scope.
 
-Embedded inside the NodeResourceSlices is the list of resources managed by the
-driver. Typically there is a single object per driver, but this could also get
-spread out across multiple if a single object would be too large.
+Embedded inside a NodeResourceSlice is the representation of the resources
+managed by a driver. With the "semantic model" of `PartitionableResources` this
+takes the form:
 
-Here is an example where the driver provides one discrete card which has
-a certain amount of compute units and RAM that can be reserved:
-
-```
+```yaml
 kind: NodeResourceSlice
 apiVersion: resource.k8s.io/v1alpha2
 ...
-nodeName: worker-1
-driverName: cards.dra.example.com
-resources:
-- name: CardA
-  attributes:
-  - name: meta
-    metadata:
-      versions:
-      - name: API
-        version: "v3.2.1" # Must comply with semver v2.0.0.
-      labels:
-      - name: SupportsPowerSaving
-      - name: Color
-        value: "Red" # arbitrary string
-      values:
-      - name: LengthInCentimeters
-        quantity: 100 # int64
-  - name: RAM
-    counter:
-      count: 1000000 # int64, could also be a resource.Quantity for readability
-  - name: ComputeUnits
-    counter:
-      count: 100
+spec:
+  nodeName: worker-1
+  driverName: cards.dra.example.com
+  partitionable:
+    ...
 ```
 
-The `metadata` and `counter` fields are mutually exclusive. Their content is
-the *attribute type* of a *semantic model*. That model defines the structure of
-the information and implements the logic that compares requests (defined below)
-against these values.
+Here all resources associated with the `cards.dra.example.com` driver are to
+be placed under the `partitionable` field in the `NodeResourceSlice` object. As
+we add more "semantic models" in the future, *alternate* fields will be added
+at the same level as `partitionable`, and driver implementors will be able to
+choose which one they want to use to represent their resources.
 
-More such fields and models may get added in the future. When old clients
-serialize into their known version of a NodeResourceSlice, they'll encounter
-an `attributes` entry with no known field set. This tells them that they
-cannot handle the object because it was extended.
+Below is an example of a driver that provides two discrete GPU cards using the
+`partitionable` model. The first card can only be used as a whole. The second
+card can be used as a whole, split up into four equal pieces, in halves, or one
+half and two quarters:
 
-The `metadata` field will be used by CEL expressions. Because it contains one
-list per type of value, the CEL expression doesn't need to convert from string
-to those types during evaluation, which makes it fully type-safe. Validation
-already happens when publishing the `NodeResourceSlice`.
-
-`metadata` is an example of an attribute which is qualitative, not
-quantitative, and one which contains more than one value. Once we are sure that
-this is how we want to handle meta data and that there is no confusion with
-other qualitative attributes, then the struct can also be lifted up into a
-`metadata` field in the `resources` entries.
-
-In the following example, a different driver instead describes a pool of
-identical cards:
-
-```
+```yaml
 kind: NodeResourceSlice
 apiVersion: resource.k8s.io/v1alpha2
 ...
-nodeName: worker-1
-driverName: pool.dra.example.com
-resources:
-- name: PoolOfLargeCards
-  attributes:
-  - name: meta
-    metadata:
-      labels:
-      - name: Configuration
-        value: Large
-  - name: Number
-    counter:
-      count: 8
+spec:
+  nodeName: worker-1
+  driverName: cards.dra.example.com
+  partitionable:
+    commonAttributes:
+    - name: drivers
+      attributes:
+      - name: driverVersion
+        String: 1.2.3
+      - name: runtimeVersion
+        String: 11.1.42
+    - name: t1000-gpu
+      attributes:
+      - name: type
+        string: GPU
+      - name: memory
+        quantity: 16Gi
+      - name: productName:
+        string: ACME T1000 32GB
+    - name: a4-gpu
+      attributes:
+      - name: type
+        String: GPU
+      - name: memory
+        quantity: 32Gi
+      - name: productName:
+        String: ACME A4-PCIE-40GB
+    - name: a4-half
+      attributes:
+      - name: memory
+        quantity: 16Gi
+    - name: a4-quarter
+      attributes:
+      - name: memory
+        quantity: 8Gi
+
+    resourceInstances:
+    - name: gpu-0
+      commonAttributesRefs:
+      - drivers
+      - t1000-gpu
+      attributes:
+      - name: UUID
+        string: GPU-ceea231c-4257-7af7-6726-efcb8fc2ace9
+    - name: partitionable-gpu-1
+      commonAttributesRefs:
+      - drivers
+      - a4-gpu
+      attributes:
+      - name: UUID
+        string: GPU-6aa0af9e-a2be-88c8-d2b3-2240d25318d7
+      partitions:
+      - name: full-gpu
+        resourceInstances:
+        - name: gpu-1
+          # Same attributes as referenced under partitionable-gpu-2.
+      - name: quarters
+        commonAttributesRefs:
+        - a4-quarter # less memory for each sub-instance.
+        resourceInstances:
+        - name: quarter-0
+        - name: quarter-1
+        - name: quarter-2
+        - name: quarter-3
+      - name: half-and-quarters
+        resourceInstances:
+        - name: first-half
+          comonAttributesRefs:
+          - a4-half
+        - name: partitionable-second-half
+          partitions:
+          - name: half
+            comonAttributesRefs:
+            - a4-half
+            resourceInstances:
+            - name: second-half
+          - name: quarters
+            comonAttributesRefs:
+            - a4-quarters
+            resourceInstances:
+            - name: quarter-0
+            - name: quarter-1
 ```
 
-If a driver needs to reduce resource capacity, then there is a risk that a claim gets
-allocated using that capacity while the kubelet is updating the
-NodeResourceSlices. The implementations of semantic models must handle
-scenarios where more resources are allocated than available. The DRA driver
-kubelet plugin must double-check that the allocated resources are still
-available when NodePrepareResource is called. If not, the pod cannot
-start until the resource comes back. Treating this as a fatal error during
-pod admission would allow to delete the pod and trying again with a new
-one.
+As mentioned previously, exactly one semantic model must be used by a given
+driver. If a new model is added to the schema but clients are not updated,
+they'll encounter an object with no information from any known semantic model
+when they serialize into their known version of a NodeResourceSlice. This tells
+them that they cannot handle the object because the API was extended.
 
-### Using semantic parameters as claim parameters
+Compared to labels, attributes in this model have values of exactly one
+type. As described later on, these attributes get used in CEL expressions that
+the scheduler can use to select a specific resource for allocation on a node.
 
-The author of the `cards.dra.example.com` DRA driver in the example above might
-define a CRD like this:
+To avoid repetition, common sets of
+attributes are defined once and referenced where needed. The example uses
+relatively simple sets, however, real-world use cases will include more information.
 
-```
+The partitioning forms a tree. Nodes further down in that tree inherit the
+attributes of their parent and can overwrite those attributes where the values
+are different.
+
+In this example, "partitionable-gpu-1/half-and-quarters/second-half/quarter-0"
+indentifies one quarter of the second GPU in one particular configuration. It
+has "8Gi" of memory. Note that "memory" for this hardware is not something
+that can be sliced up and consumed arbitrarily. Instead, the partitioning
+defines how much if it is available, which makes the memory size an attribute
+of each individual sub-partition.
+
+The "partitionable-gpu-1" GPU can be used either with the "full-gpu", "quarters",
+or "half-and-quarters" partitioning scheme. When using "half-and-quarters", there's
+another choice between a "half" and "quarters" partitioning scheme for the second half. Once a
+partitioning scheme has been chosen to satisfy a claim, it cannot be changed
+until all claims bound to resources from that partition have been deallocated.
+
+At the moment, resource attribute names and their type are defined by
+vendors. Resource names with ".k8s.io" as a suffix are reserved for future use
+and standardization by Kubernetes. This could be used to describe topology
+across resources from different vendors, but this is out-of-scope for now.
+
+If a driver needs to reduce resource capacity, then there is a risk that a
+claim gets allocated using that capacity while the kubelet is updating a
+NodeResourceSlice. The implementations of semantic models must handle scenarios
+where more resources are allocated than available. The kubelet plugin of a DRA
+driver ***must*** double-check that the allocated resources are still available
+when NodePrepareResource is called. If not, the pod cannot start until the
+resource comes back. Treating this as a fatal error during pod admission would
+allow us to delete the pod and trying again with a new one.
+
+### Using semantic parameters
+
+The following is an example CRD which the developer of the
+`cards.dra.example.com` DRA driver might define as a valid claim parameters
+object for requesting access to its GPUs:
+
+```yaml
 kind: CardParameters
 apiVersion: dra.example.com/v1alpha1
 metadata:
@@ -344,21 +440,27 @@ metadata:
   uid: foobar-uid
 ...
 spec:
-  minimumAPI: "v1.0.0"
-  supportsPowerSaving: true
-  requirements:
-    RAM: 10Gi
-    ComputeUnits: 2
+  count: 2
+  minimumRuntimeVersion: v12.0.0
+  minimumMemory: 8Gi
+  # "sharing" is a configuration parameter that does not
+  # get translated into the selector below.
+  sharing:
+    strategy: TimeSliced
 ```
 
-Note that all fields can be fully validated, including value ranges that are
-specific to the underlying hardware.
+Note that all fields in this CRD can be fully validated since it is owned by
+the DRA driver itself. This includes value ranges that are specific to the
+underlying hardware. There's no risk of using invalid attribute names because
+only the fields shown here are valid.
 
-When a user creates an object of that type, the DRA driver control plane must
-convert it into an in-tree ResourceClaimParameters object because the scheduler
-doesn't understand `CardParameters`. That object then looks like this:
+With this CRD in place, a DRA driver controller is able to convert instances of
+it into a generic, in-tree `ResourceClaimParameters` object that the scheduler
+is able to understand.
 
-```
+For the example above, the converted object would look as follows:
+
+```yaml
 kind: ResourceClaimParameters
 apiVersion: resource.k8s.io/v1alpha2
 
@@ -373,35 +475,101 @@ generatedFrom:
   kind: CardParameters
   apiGroup: dra.example.com
   uid: foobar-uid
-  generation: 10 # Ensures that only up-to-date generated parameters are used.
 
-parameters:
-- name: meta
+vendorParameters:
+  # A vendor can put any kind of object here to pass the configuration
+  # parameters down to the kubelet plugin. In this case, the vendor
+  # driver simply copied the entire CR. It could also be some
+  # separate, smaller configuration type.
+  kind: CardParameters
+  apiVersion: dra.example.com/v1alpha1
   metadata:
-    # A CELL expression with access to the labels, versions, and values defined for
-    # the node resource.
-    selector: versions["API"] >= "v1.0.0" && labels.has("SupportsPowerSaving")
-- name: RAM
-  counter:
-    required: 10000000
-- name: ComputeUnits
-  counter:
-    required: 2
+    name: my-parameters
+    namespace: user-namespace
+    uid: foobar-uid
+  ...
+  spec:
+    count: 2
+    minimumRuntimeVersion: v12.0.0
+    minimumMemory: 8Gi
+    sharing:
+      strategy: TimeSliced
+
+requests:
+- driverName: cards.dra.example.com
+  partitionable:
+    required:
+    - name: selected-gpu-0
+      # A CEL expression with access to the attributes of the sub-partition
+      # that is being checked for a match.
+      selector: |-
+        versions["runtimeVersion"] >= "v12.0.0" && quantities["memory"] >= "8Gi"
+    - name: selected-gpu-1
+      # Same as above in this example, but could also be different.
+      selector: |-
+        versions["runtimeVersion"] >= "v12.0.0" && quantities["memory"] >= "8Gi"
 ```
 
-The semantic is that all parameters must be satisfied by a single resource of
-the driver. Note that for the "pool of cards" example that makes it impossible
-to ask for two cards with no additional selection criteria and then get one
-from `PoolOfLargeCards` and one from a hypothetical second pool
-`PoolOfSmallCards` (not included in the example above).
+The semantic is that the selector expression must evaluate to true for a
+particular sub-partition to be usable. The initial implementation will use a
+very simplistic approach for satisfying requests: it iterates over the requests
+in order and uses the first sub-partition in a depth-first search which
+matches. This locks that instance into a certain partitioning, which then
+influences whether the next request still can be satisfied. With that in mind,
+a better way to list sub-partitions would be to list the small ones first in
+the NodeResourceSlice, to avoid using a whole GPU for a claim that could have
+used a smaller sub-partition instead.
 
-The semantic models define how to match the parameters against the node
-resources. For the `counter` model, the required amount must be available. Once
-allocated, the remaining amount can be used for other claims. The `metadata`
-model only returns a yes/no decision.
+Eventually, this implementation will have to become smarter. It needs to
+support backtracking and scoring of possible solutions to find the best one
+which satisfies the requests. This could be extended to support finding the
+best solution for a set of pods and their claims.
+
+Another future extension is to express constraints that must be satisfied for
+the selected instances. For example, selecting two cards which are on the same
+PCI root complex may be needed to get the required performance.
 
 Instead of defining a vendor CRD, DRA driver authors or administrators may also
-decide to allow users to create and reference ResourceClaimParameters directly.
+decide to allow users to create and reference ResourceClaimParameters directly
+in their ResourceClaim. Then the translation step from vendor CRD is not
+needed. The downside is a lack of validation of these user-created
+ResourceClaimParameters.
+
+Resource class parameters are supported the same way. To ensure that
+permissions can be limited to administrators, there's a separate cluster-scoped
+ResourceClassParameters type. Instead of individual requests, one additional
+selector can be specified there which then also must be true for all individual
+requests made with that class:
+
+```yaml
+kind: ResourceClassParameters
+apiVersion: resource.k8s.io/v1alpha2
+
+metadata:
+  name: someArbitraryName
+
+generatedFrom:
+  name: gpu-parameters
+  kind: CardClassParameters
+  apiGroup: dra.example.com
+  uid: foobar-uid
+
+vendorParameters:
+  ...
+
+filters:
+- driverName: cards.dra.example.com
+  partitionable:
+    selector: |-
+      quantities["memory"] <= "16Gi"
+```
+
+In this example, the additional selector expression limits users of this class
+to smaller sub-partitions. Together with limiting the number of claims that
+users are allowed to create for this class (see resource quotas in the core
+KEP) this can ensure that users do not consume too much resources. Allowing
+resource quotas that are based on resource attributes may be a useful future
+enhancement.
 
 ### Communicating allocation to the DRA driver
 
@@ -413,7 +581,35 @@ parameters are optional but might also be used to provide additional
 configuration.
 
 All of this information gets stored in the allocation result inside the
-ResourceClaim status.
+ResourceClaim status. For the example above, the result is simply the list of
+IDs of the selected sub-partitions and a snapshot of the original vendor CR
+with the "sharing" configuration parameter:
+
+```yaml
+# Matches with the SemanticResourceHandle Go type defined below.
+vendorClassParameters:
+  ...
+vendorClaimParameters:
+  kind: CardParameters
+  apiVersion: dra.example.com/v1alpha1
+  metadata:
+    name: my-parameters
+    namespace: user-namespace
+    uid: foobar-uid
+  ...
+  spec:
+    count: 2
+    minimumRuntimeVersion: v12.0.0
+    minimumMemory: 8Gi
+    sharing:
+      strategy: TimeSliced
+
+nodeName: worker-1
+partitionable:
+  instances:
+  - partitionable-gpu-2/half-and-quarters/second-half/quarter-0
+  - partitionable-gpu-2/half-and-quarters/second-half/quarter-1
+```
 
 Taking these snapshots ensures that the claim remains usable even when
 everything else gets deleted. This is particularly important when it is already
@@ -439,33 +635,15 @@ informers will have to be used that get started and stopped as needed.
 A new, optional field in ResourceClass enables semantic parameters for claims
 using this class:
 
-```
+```go
 type ResourceClass struct {
-	...
+    ...
 
-	// If (and only if) allocation of claims using this class is handled
-	// via semantic parameters, then ParameterTypes describes those
-	// parameters. A driver might support multiple different CRDs for
-	// its claims.
-	ParameterTypes []SemanticParameterType
-}
-
-// SemanticParameterType describes one resource that may be used for
-// claim parameters of a class which uses semantic parameters.
-type SemanticParameterType struct {
-	// APIGroup is the group for the resource being referenced. It is
-	// empty for the core API. This matches the group in the APIVersion
-	// that is used when creating the resources.
-	// +optional
-	APIGroup string
-	// Kind is the type of resource being referenced. This is the same
-	// value as in the parameter object's metadata.
-	Kind string
+    // If (and only if) allocation of claims using this class is handled
+    // via semantic parameters, then SemanticParameters must be set to true.
+    SemanticParameters bool
 }
 ```
-
-"ResourceClaimParameters" and "resource.k8s.io" are valid here. A class may
-also allow both this native type and one or more vendor CRDs as parameters.
 
 ### NodeResourceSlice
 
@@ -473,96 +651,197 @@ For each node, one or more NodeResourceSlice objects get created. The kubelet
 publishes them with the node as the owner, so they get deleted when a node goes
 down and then gets removed.
 
-```
+All list types are atomic because that makes tracking the owner for
+server-side-apply (SSA) simpler. Patching individual list elements is not
+needed and there is a single owner (kubelet).
+
+```go
 // NodeResourceSlice provides information about available
 // resources on individual nodes.
 type NodeResourceSlice struct {
-	metav1.TypeMeta
-	// Standard object metadata
-	// +optional
-	metav1.ObjectMeta
+    metav1.TypeMeta
+    // Standard object metadata
+    // +optional
+    metav1.ObjectMeta
 
-	// NodeName identifies the node where the capacity is available.
-	// A field selector can be used to list only NodeResources
-	// objects with a certain node name.
-	NodeName string
-
-	// DriverName identifies the DRA driver providing the capacity information.
-	// A field selector can be used to list only NodeResources
-	// objects with a certain driver name.
-	DriverName string
-
-	// Resources describes resources managed by the driver on
-	// the node. It is possible to create more than one NodeResources
-	// object for the same node and driver if this array becomes to large
-	// for a single object.
-	Resources []NodeResource
-}
-
-// NodeResource describes one resource.
-type NodeResource struct {
-	// ID is chosen by the driver to distinguish between different resource
-	// instances. It only needs to be unique for the driver and node.  In
-	// other words, the tuple of NodeName, DriverName, InstanceID needs to
-	// be unique in the cluster.
-	ID string
-
-    // Attributes describe the instance.
-	Attributes []ResourceAttribute
-}
-
-// ResourceAttribute describes one particular aspect of a resource,
-// using one (and only one!) of several different semantic models.
-type ResourceAttribute struct {
-    Name string
-    ResourceAttributeModel // inline
-}
-
-// ResourceAttributeModel must have one and only one field set.
-type ResourceAttributeModel struct {
-	Counter *CounterAttribute
-    Metadata *MetadataAttribute
+    Spec NodeResourceSliceSpec
 }
 ```
+
+There is only a spec for a NodeResourceSlice at the moment. It holds the
+information about available resources. A status is not strictly needed because
+the information in the allocated claim statuses is sufficient to determine
+which of those resources are reserved for claims.
+
+However, despite the finalizer on the claims it could happen that a
+sufficiently determined user deletes a claim while it is in use. Therefore
+adding a status is a useful future extension. That status will include
+information about reserved resources (set by schedulers before allocating a
+claim) and in-use resources (set by kubelet). This then enables conflict
+resolution when multiple schedulers schedule pods to the same node because they
+would be required to set a reservation before proceeding with the
+allocation. It also enables detecting inconsistencies and taking actions to fix
+those, like deleting pods which use a deleted claim.
+
+```go
+type NodeResourceSliceSpec {
+    // NodeName identifies the node where the capacity is available.
+    // A field selector can be used to list only NodeResources
+    // objects with a certain node name.
+    NodeName string
+
+    // DriverName identifies the DRA driver providing the capacity information.
+    // A field selector can be used to list only NodeResources
+    // objects with a certain driver name.
+    DriverName string
+
+    NodeResourceModel // inline, field names must not conflict with the ones above
+}
+
+// NodeResourceModel must have one and only one field set.
+type NodeResourceModel struct {
+    Partitionable *PartitionableResources
+}
+
+type PartitionableResources struct {
+    CommonAttributes  []AttributeGroup
+    ResourceInstances []ResourceInstance
+}
+
+type AttributeGroup struct {
+    Name       string
+    Attributes []Attribute
+}
+
+type Attribute struct {
+    Name string
+    AttributeValue // inline, field names must not conflict
+}
+
+// AttributeValue must have one and only one field set.
+type AttributeValue {
+    Quantity    *resource.Quantity
+    Bool        *bool
+    Int         *int64
+    IntSlice    *[]int64
+    String      *string
+    StringSlice *[]string
+    Version     *SemVersion
+}
+
+type ResourceInstance struct {
+    Name                 string
+    CommonAttributesRefs []string
+    Attributes           []Attribute
+    Partitions           []ResourceInstanceGroup // If empty, it is not partitionable
+}
+
+type ResourceInstanceGroup struct {
+    Name               string
+    ResourceInstances  []ResourceInstance
+}
+
+// A wrapper around https://pkg.go.dev/github.com/blang/semver/v4#Version which
+// is encoded as a string. During decoding, it validates that the string
+// can be parsed using tolerant parsing (currently trims spaces, removes a "v" prefix,
+// adds a 0 patch number to versions with only major and minor components specified,
+// and removes leading 0s).
+type SemVersion {
+   semverv4.Version
+}
+```
+
+All names must be DNS sub-domains. This excludes the "/" character, therefore
+combining different names with that separator to form an ID is valid.
+
 
 ### ResourceClaimParameters
 
-```
+```go
 type ResourceClaimParameters struct {
-	metav1.TypeMeta `json:",inline"`
-	// Standard object metadata
-	metav1.ObjectMeta
+    metav1.TypeMeta `json:",inline"`
+    // Standard object metadata
+    metav1.ObjectMeta
 
-	// If this object was created from some other resource, then this links
-	// back to that resource. This field is used to find the in-tree representation
-	// of the claim parameters when the parameter reference of the claim refers
-	// to some unknown type.
-	GeneratedFrom *ResourceClaimParametersObjectReference
+    // If this object was created from some other resource, then this links
+    // back to that resource. This field is used to find the in-tree representation
+    // of the claim parameters when the parameter reference of the claim refers
+    // to some unknown type.
+    GeneratedFrom *ResourceClaimParametersReference
 
     // Shareable indicates whether the allocated claim is meant to be shareable
     // by multiple consumers at the same time.
     Shareable bool
 
-	// Parameters contains parameters for semantic models. All of
-	// the parameters specified here must be satisfied before a claim
-	// using these parameters can be allocated.
-    //
-    // At the moment, all of them must be satisfied by the same resource instance.
-	Parameters []ResourceParameter
+    // Requests describes all resources that are needed for the allocated claim.
+    // A single claim may use resources coming from different drivers.
+    Requests []ResourceRequest
 }
 
-// ResourceParameter describes one parameter which gets matched against the
-// ResourceAttribute with the same name. It's an error to combine parameters
-// of one semantic model with attributes of a different one.
-type ResourceParameter struct {
+// ResourceRequest is a request for resources from one particular driver.
+type ResourceRequest struct {
+    DriverName string
+    ResourceRequestModel // inline, fields must not conflict
+}
+
+// ResourceRequestModel must have one and only one field set.
+type ResourceRequestModel struct {
+    Partitionable *PartitionableResourceRequest
+}
+
+type PartitionableResourceRequests struct {
+    Required []PartitionableResourceRequest
+}
+
+type PartitionableResourceRequest struct {
+    // The name is not used right now. It might get used in the future to define
+    // cross-request constraints.
     Name string
-    ResourceParameterModel // inline
+
+    // Selector is a CEL expression which must evaluate to true if a
+    // resource instances is suitable. The language is as defined in
+    // https://kubernetes.io/docs/reference/using-api/cel/
+    //
+    // In addition, for each supported attribute value type there
+    // is a map that resolves to the corresponding value of the
+    // instance under evaluation.
+    Selector string
+}
+```
+
+### ResourceClassParameters
+
+```go
+type ResourceClassParameters struct {
+    metav1.TypeMeta `json:",inline"`
+    // Standard object metadata
+    metav1.ObjectMeta
+
+    // If this object was created from some other resource, then this links
+    // back to that resource. This field is used to find the in-tree representation
+    // of the claim parameters when the parameter reference of the claim refers
+    // to some unknown type.
+    GeneratedFrom *ResourceClassParametersReference
+
+    // Filters describes additional contraints that must be met when using the class.
+    Filters []ResourceFilter
 }
 
-// ResourceParameterModel must have one and only one field set.
-type SemanticParameterModel struct {
-    Counter *CounterParameter
-    Metadata *MetadataParameter
+// ResourceFilter is a filter for resources from one particular driver.
+type ResourceFilter struct {
+    DriverName string
+    ResourceFilterModel // inline, fields must not conflict
+}
+
+// ResourceFilterModel must have one and only one field set.
+type ResourceFilterModel struct {
+    Partitionable *PartitionableResourceFilter
+}
+
+type PartitionableResourceFilter struct {
+    // Selector is a selector like the one in PartitionableResourceRequest. It must be
+    // true for a resource instance to be suitable for a claim using the class.
+    Selector string
 }
 ```
 
@@ -571,7 +850,7 @@ type SemanticParameterModel struct {
 The ResourceHandle is embedded inside the claim status. When using semantic parameters,
 a new field must get populated instead of the opaque driver data.
 
-```
+```go
 type ResourceHandle struct {
     // DriverName specifies the name of the resource driver whose kubelet
     // plugin should be invoked to process this ResourceHandle's data once it
@@ -596,37 +875,47 @@ type ResourceHandle struct {
 }
 
 type SemanticResourceHandle struct {
-	// ClassParameters are the parameters from the time that the claim
-	// was allocated. They can be arbitrary setup parameters that are
-	// ignore by the counter controller.
-	ClassParameters *runtime.RawExtension
+    // VendorClassParameters are the parameters from the time that the claim
+    // was allocated. They can be arbitrary setup parameters that are
+    // ignore by the counter controller.
+    VendorClassParameters *runtime.RawExtension
 
-	// ClaimParameters are the parameters from the time that the claim was
-	// allocated. Some of the fields were used by the counter controller to
-	// allocated resources, others can be arbitrary setup parameters.
-	ClaimParameters *runtime.RawExtension
+    // VendorClaimParameters are the parameters from the time that the claim was
+    // allocated. Some of the fields were used by the counter controller to
+    // allocated resources, others can be arbitrary setup parameters.
+    VendorClaimParameters *runtime.RawExtension
 
    	// NodeName is the name of the node providing the necessary resources.
     // This mirrors the AllocationResult.AvailableOnNodes with a simpler
     // type.
     //
     // The driver name is the one stored in ResourceHandle.
-	NodeName string
+    NodeName string
 
-    Allocations []AllocationResultModel
+    AllocationResultModel // inline, fields must not conflict
 }
 
 // AllocationResultModel must have one and only one field set.
-type SemanticResourceHandleModel struct {
-    Counter *CounterAllocation
+type AllocationResultModel struct {
+    Partitionable *PartitionableAllocationResult
+}
 
-    // Metadata not listed here - it currently has no allocation result.
+type PartitionableAllocationResult struct {
+    Instances []AllocatedResourceInstance
+}
+
+type AllocatedResourceInstance struct {
+   ID string // A concatenation with / of the individual names.
 }
 ```
 
-### Semantic models
+### Implementation of semantic models
 
-TODO: document types referenced above
+In the Go types above, all structs starting with `Partitionable` are part of that
+semantic model. In practice, organizing those inside their own Go package and
+then importing that package in the definition of the resource.k8s.io API will
+result in a cleaner separation at the source code level. It has no impact on
+the resulting Kubernetes API.
 
 ### Scheduling + Allocation
 
@@ -666,6 +955,11 @@ with immediate allocation remain allocated when no longer in use.
 
 ### Simulation with CA
 
+**Note**: this section outlines one potential solution for Cluster Autoscaler.
+During code review it will be decided whether the actual implement is done like
+this. Other autoscalers will have to implement a similar logic if they don't
+use the in-tree dynamic resourceclaim scheduler plugin.
+
 The usual call sequence of a scheduler plugin when used in the scheduler is
 at program startup:
 - instantiate plugin
@@ -691,19 +985,33 @@ This is done through a new `ClusterAutoScalerPlugin` interface defined in
 `k/k/pkg/scheduler/framework` that is implemented by the dynamic resource
 plugin:
 
-```
+```go
 type ClusterAutoScalerPlugin interface {
-	Plugin
-	// StartSimulation is called when the cluster autoscaler begins
-	// a simulation.
-	StartSimulation(ctx context.Context, state *CycleState) *Status
-	// SimulateBindPod is called when the cluster autoscaler decided to schedule
-	// a pod onto a certain node.
-	SimulateBindPod(ctx context.Context, state *CycleState, pod *v1.Pod, nodeInfo *NodeInfo) *Status
-	// SimulateEvictPod is called when the cluster autoscaler simulates removal
-	// of a node. All claims used only by this pod should be considered deallocated,
-	// to enable starting the same pod elsewhere.
-	SimulateEvictPod(ctx context.Context, state *CycleState, pod *v1.Pod, nodeName string) *Status
+    Plugin
+    // StartSimulation is called when the cluster autoscaler begins
+    // a simulation.
+    StartSimulation(ctx context.Context, state *CycleState) *Status
+
+    // SimulateAddNode is called when the cluster autoscaler adds a new fictional node.
+    // It's the job of the autoscaler to provide the NodeResourceSlices for
+    // that node. The plugin adapts its internal model of available resources
+    // accordingly.
+    SimulateAddNode(ctx context.Context, state *CycleState, nodeInfo *NodeInfo, resources []resource.NodeResourceSlice) *Status
+
+    // SimulateRemoveNode is called when the cluster autoscaler removes a real or fictional node.
+    // The plugin adapts its internal model of available resources accordingly.
+    // Pods using resources on the node must be evicted via SimulateEvictPod first,
+    // otherwise this call fails.
+    SimulateRemoveNode(ctx context.Context, state *CycleState, nodeInfo *NodeInfo) *Status
+
+    // SimulateBindPod is called when the cluster autoscaler decided to schedule
+    // a pod onto a certain node.
+    SimulateBindPod(ctx context.Context, state *CycleState, pod *v1.Pod, nodeInfo *NodeInfo) *Status
+
+    // SimulateEvictPod is called when the cluster autoscaler simulates removal
+    // of a node. All claims used only by this pod should be considered deallocated,
+    // to enable starting the same pod elsewhere.
+    SimulateEvictPod(ctx context.Context, state *CycleState, pod *v1.Pod, nodeName string) *Status
 }
 ```
 
@@ -714,7 +1022,7 @@ Cluster autoscaler will at program startup:
 At the start of a simulation:
 - call `StartSimulation` with a clean cycle state
 
- For each pending pod:
+For each pending pod:
 - call PreFilter and Filter with the same cycle state that
   was passed to `StartSimulation`
 - call `SimulateBindPod` and/or `SimulateEvictPod` with the same cycle state that
@@ -731,23 +1039,8 @@ The dynamic resource plugin will:
 - In `SimulateBindPod` and `SimulateEvictPod` update the snapshot in the cycle state:
   claims get allocated when first used resp. deallocated when they become unused.
 
-Adding or removing nodes is not part of the interface. Instead, new unknown
-nodes need to be detected in `Filter`:
-- When creating a fictional node during simulation from an existing node, CA
-  needs to add a special annotation `autoscaling.k8s.io/node-resource-slices`
-  with the name of the original node. Then the NodeResourceSlices object(s)
-  with that node name, i.e. from the original node, get used also for the
-  fictional node. The assumption is that the new node will have the same
-  hardware and configuration and thus the same capacity as the old one.
-- When scaling from zero, the cluster administrator or cloud provider must
-  create such objects per node group and then ensure that fictional nodes created for
-  that node group have the `autoscaling.k8s.io/node-resource-slices` with
-  that name.
-- To the scheduler plugin, both cases look the same and thus no special cases
-  are needed.
+Node addition and removal has the corresponding effect on the current state.
 
-Removal of nodes doesn't need to be detected by the plugin. They simply won't
-be used anymore and eventually will get discarded when simulation ends.
 
 ### Test Plan
 
@@ -1167,6 +1460,15 @@ parameters. They have to learn and understand how semantic models
 work to pick something which fits their needs.
 
 ## Alternatives
+
+### Publishing resource information in node status
+
+This is not desirable for several reasons (most important one first):
+- All data from all drivers must be in a single object which is already
+  large. It might become too large, with no chance of mitigating that by
+  splitting up the information.
+- All watchers of node objects get the information even if they don't need it.
+- It puts complex alpha quality fields into a GA API.
 
 ### Injecting vendor logic into CA
 

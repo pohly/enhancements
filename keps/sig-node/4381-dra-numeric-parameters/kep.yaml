@@ -9,11 +9,11 @@ participating-sigs:
 status: implementable
 creation-date: 2024-01-05
 reviewers:
-  - TBD
-  - "@alice.doe"
+  - @klueska
 approvers:
-  - TBD
-  - "@oscar.doe"
+  - @alculquicondor # SIG Scheduling
+  - @dchen1107 # SIG Node
+  - @MaciekPytel # SIG Autoscaling
 
 see-also:
   - "/keps/sig-node/3063-dynamic-resource-allocation"
