@@ -151,13 +151,14 @@ Items marked with (R) are required *prior to targeting to a milestone / release*
 
 ## Summary
 
-Dynamic Resource Allocation (DRA) was added to Kubernetes as an alpha feature in v1.26. It defines an alternative to the traditional device-plugin API for requesting access to third-party resources.
-
+Dynamic Resource Allocation (DRA) was added to Kubernetes as an alpha feature in
+v1.26. It defines an alternative to the traditional device-plugin API for
+requesting access to third-party resources.
 
 By design, DRA uses parameters for resources that are completely
 opaque to core Kubernetes. They get interpreted by a DRA driver's controller
 (for allocating claims) and a DRA driver's kubelet plugin (for configuring
-resources a node). During scheduling of a pod, the kube-scheduler and any DRA
+resources on a node). During scheduling of a pod, the kube-scheduler and any DRA
 driver controller(s) handling claims for the pod communicate back-and-forth through the
 apiserver by updating a `PodSchedulingContext` object, ultimately leading to the
 allocation of all pending claims and the pod being scheduled onto a node.
@@ -166,8 +167,8 @@ This approach poses a problem for the [Cluster
 Autoscaler](https://github.com/kubernetes/autoscaler) (CA) or for any higher
 level controller that needs to make decisions for a group of pods (e.g. a job
 scheduler). It cannot simulate the effect of allocating or deallocating
-claims over time. Only the third-party DRA
-drivers have the information available to do this.
+claims over time. Only the third-party DRA drivers have the information
+available to do this.
 
 "Semantic parameters" is an extension to DRA that addresses this problem by
 making claim parameters less opaque. Instead of managing the semantics of all
@@ -210,20 +211,15 @@ At a high-level, this extension takes the following form:
   configuration information attached to the vendor-specific claim parameters
   object used in the request.
 
-In this KEP, we define a single "semantic model" called
-`PartitionableResources`, and use it throughout the discussion to help describe
-the framework as a whole. This model is a natural extension to the API provided
-by the traditional device-plugin, which supports advertising resources as a
-finite set of opaque strings. The major difference being that under the new
-model, one can attach a list of attributes to those opaque strings which the
-scheduler can use to select a particular resource for allocation. Additionally,
-each resource can be divided into a set of pre-defined partitions, each with
-their own set of unique attributes attached to them. In this way, requests for
-resources can be satisfied either by a complete resource instance or by one of
-its partitions.  This model may get enhanced in the future and/or other models
-might get added as needed.  Each model must have clear semantics which can be
-implemented by any consuming component, such as the scheduler.
+This KEP is specifically focused on defining the framework necessary to enable
+different "semantic models" to be added to Kuberenetes over time. It is out of
+scope to actually define one of these model themselves.
 
+Instead, we provide an example of how one might map the way resources are
+exposed by the traditional device-plugin API into a "semantic model". We don't
+believe this model is expressive enough to satify the majority of the use-cases
+we want to cover with DRA, but it's useful enough to demonstrate the overall
+"semantic parameters" framework.
 
 ## Motivation
 
@@ -259,23 +255,30 @@ demonstrate the interest in a KEP within the wider Kubernetes community.
 
 ### Publishing node resources
 
-The kubelet publishes NodeResourceSlices to the API server with content
-provided by DRA drivers running on its own node. It's also responsible for
-deleting or updating stale objects. The `nodeName` field determines which
-objects each kubelet instance is responsible for. Access control through the node
+The resources available on a node need to be published to the API server. In
+the typical case, this is expected to be published by the on-node driver via
+the kubelet, as described below. However, the source of this data may vary; for
+example, a cloud provider controller could populate this based upon information
+from the cloud provider API.
+
+In the kubelet case, each kubelet publishes kubelet publishes a set of
+`NodeResourceSlice` objects to the API server with content provided by the
+corresponding DRA drivers running on its node. Access control through the node
 authorizer ensures that the kubelet running on one node is not allowed to
-create or modify NodeResourceSlices belonging to other nodes.
+create or modify `NodeResourceSlices` belonging to another node. A `nodeName`
+field in each `NodeResourceSlice` object is used to determine which objects are
+managed by which kubelet.
 
-NodeResourceSlices are published separately for each driver, using the version
-of the resource.k8s.io API supported by kubelet. That version then also is used
-in the gRPC interface between kubelet and the DRA drivers which provide the
-content for those objects. It might be possible to support version skew (=
-keeping kubelet at an older version than the control plane and the DRA drivers)
-in the future, but currently this is out of scope.
+**NOTE:**  `NodeResourceSlices` are published separately for each driver, using
+whatever version of the `resource.k8s.io` API is supported by the kubelet. That
+same version is then also used in the gRPC interface between the kubelet and
+the DRA drivers providing content for those objects. It might be possible to
+support version skew (= keeping kubelet at an older version than the control
+plane and the DRA drivers) in the future, but currently this is out of scope.
 
-Embedded inside a NodeResourceSlice is the representation of the resources
-managed by a driver. With the "semantic model" of `PartitionableResources` this
-takes the form:
+Embedded inside each `NodeResourceSlice` is the representation of the resources
+managed by a driver according to a specific "semantic model". In the example
+seen below, the semantic model in use is called `namedResourcesWithAttributes`:
 
 ```yaml
 kind: NodeResourceSlice
@@ -284,33 +287,37 @@ apiVersion: resource.k8s.io/v1alpha2
 spec:
   nodeName: worker-1
   driverName: cards.dra.example.com
-  partitionable:
+  namedResourcesWithAttributes:
     ...
 ```
 
-Here all resources associated with the `cards.dra.example.com` driver are to
-be placed under the `partitionable` field in the `NodeResourceSlice` object. As
-we add more "semantic models" in the future, *alternate* fields will be added
-at the same level as `partitionable`, and driver implementors will be able to
-choose which one they want to use to represent their resources.
+Such a model could be created to represent resources in a manner similar to the
+opaque strings passed over the tradition device plugin API to the kubelet. The
+one addition being that each named resource can have a set of arbitrary
+attributes attached to it.
 
-If a new model is added to the schema but clients are not updated,
+If a driver wanted to use a different semantic model to represent its resources,
+a new semantic model would need to be defined inside Kuberenetes, and a field
+would need to be added to this struct at the same level as
+`namedResourcesWithAttributes`. Driver implementors would then have the option
+to set this new field instead.
+
+**Note:** If a new model is added to the schema but clients are not updated,
 they'll encounter an object with no information from any known semantic model
-when they serialize into their known version of a NodeResourceSlice. This tells
-them that they cannot handle the object because the API was extended.
+when they serialize into their known version of a `NodeResourceSlice`. This
+tells them that they cannot handle the object because the API has been extended.
 
 Drivers can use different semantic models by publishing multiple
-NodeResourceSlice objects, as long as each model represents a distinct set of
+`NodeResourceSlice` objects, as long as each model represents a distinct set of
 resources. Whether the information about resources of one particular semantic
-model must fit into one NodeResourceSlice object or can be distributed across
-many depends on the semantic model and how it describes resources. The size of
-each object is a hard limit that must be taken into account when designing a
-semantic model and preparing NodeResourceSlice objects.
+model must fit into one NodeResourceSlice object (or be distributed across
+many) depends on how that particular semantic model describes its resources. In
+all cases, the size of each object is a hard limit and one must take this into
+account when designing a semantic model and preparing NodeResourceSlice objects
+for it.
 
 Below is an example of a driver that provides two discrete GPU cards using the
-`partitionable` model. The first card can only be used as a whole. The second
-card can be used as a whole, split up into four equal pieces, in halves, or one
-half and two quarters:
+`namedResourcesWithAttributes` model described above:
 
 ```yaml
 kind: NodeResourceSlice
@@ -319,125 +326,56 @@ apiVersion: resource.k8s.io/v1alpha2
 spec:
   nodeName: worker-1
   driverName: cards.dra.example.com
-  partitionable:
-    commonAttributes:
-    - name: drivers
-      attributes:
-      - name: driverVersion
-        String: 1.2.3
-      - name: runtimeVersion
-        String: 11.1.42
-    - name: t1000-gpu
-      attributes:
-      - name: type
-        string: GPU
-      - name: memory
-        quantity: 16Gi
-      - name: productName:
-        string: ACME T1000 32GB
-    - name: a4-gpu
-      attributes:
-      - name: type
-        String: GPU
-      - name: memory
-        quantity: 32Gi
-      - name: productName:
-        String: ACME A4-PCIE-40GB
-    - name: a4-half
-      attributes:
-      - name: memory
-        quantity: 16Gi
-    - name: a4-quarter
-      attributes:
-      - name: memory
-        quantity: 8Gi
-
-    resourceInstances:
-    - name: gpu-0
-      commonAttributesRefs:
-      - drivers
-      - t1000-gpu
-      attributes:
-      - name: UUID
-        string: GPU-ceea231c-4257-7af7-6726-efcb8fc2ace9
-    - name: partitionable-gpu-1
-      commonAttributesRefs:
-      - drivers
-      - a4-gpu
-      attributes:
-      - name: UUID
-        string: GPU-6aa0af9e-a2be-88c8-d2b3-2240d25318d7
-      partitions:
-      - name: full-gpu
-        resourceInstances:
-        - name: gpu-1
-          # Same attributes as referenced under partitionable-gpu-2.
-      - name: quarters
-        commonAttributesRefs:
-        - a4-quarter # less memory for each sub-instance.
-        resourceInstances:
-        - name: quarter-0
-        - name: quarter-1
-        - name: quarter-2
-        - name: quarter-3
-      - name: half-and-quarters
-        resourceInstances:
-        - name: first-half
-          comonAttributesRefs:
-          - a4-half
-        - name: partitionable-second-half
-          partitions:
-          - name: half
-            comonAttributesRefs:
-            - a4-half
-            resourceInstances:
-            - name: second-half
-          - name: quarters
-            comonAttributesRefs:
-            - a4-quarters
-            resourceInstances:
-            - name: quarter-0
-            - name: quarter-1
+  namedResourcesWithAttributes:
+  - name: gpu-0
+    attributes:
+    - name: UUID
+      string: GPU-ceea231c-4257-7af7-6726-efcb8fc2ace9
+    - name: driverVersion
+      string: 1.2.3
+    - name: runtimeVersion
+      string: 11.1.42
+    - name: memory
+      quantity: 16Gi
+    - name: productName:
+      string: ACME T1000 32GB
+  - name: gpu-1
+    attributes:
+    - name: UUID
+      string: GPU-6aa0af9e-a2be-88c8-d2b3-2240d25318d7
+    - name: driverVersion
+      string: 1.2.3
+    - name: runtimeVersion
+      string: 11.1.42
+    - name: memory
+      quantity: 32Gi
+    - name: productName:
+      string: ACME A4-PCIE-40GB
 ```
 
-Compared to labels, attributes in this model have values of exactly one
-type. As described later on, these attributes get used in CEL expressions that
-the scheduler can use to select a specific resource for allocation on a node.
+Where "gpu-0" represents one type of card and "gpu-1" represents another (with
+the attributes hanging off each serving to "define" their individual
+properties).
 
-To avoid repetition, common sets of
-attributes are defined once and referenced where needed. The example uses
-relatively simple sets, however, real-world use cases will include more information.
+Compared to labels, attributes in this model have values of exactly one type. As
+described later on, these attributes can be used in CEL expressions to select a
+specific resource for allocation on a node.
 
-The partitioning forms a tree. Nodes further down in that tree inherit the
-attributes of their parent and can overwrite those attributes where the values
-are different.
+While this model is still hypothetical, we do imagine real-world models
+attaching attributes to their resources in a similar way. To avoid any future
+conflicts, we plan to reserve any attributes with the ".k8s.io" suffix for
+future use and standardization by Kubernetes. This could be used to describe
+topology across resources from different vendors, for example, but this is out-
+of-scope for now.
 
-In this example, "partitionable-gpu-1/half-and-quarters/second-half/quarter-0"
-indentifies one quarter of the second GPU in one particular configuration. It
-has "8Gi" of memory. Note that "memory" for this hardware is not something
-that can be sliced up and consumed arbitrarily. Instead, the partitioning
-defines how much if it is available, which makes the memory size an attribute
-of each individual sub-partition.
-
-The "partitionable-gpu-1" GPU can be used either with the "full-gpu", "quarters",
-or "half-and-quarters" partitioning scheme. When using "half-and-quarters", there's
-another choice between a "half" and "quarters" partitioning scheme for the second half. Once a
-partitioning scheme has been chosen to satisfy a claim, it cannot be changed
-until all claims bound to resources from that partition have been deallocated.
-
-At the moment, resource attribute names and their type are defined by
-vendors. Resource names with ".k8s.io" as a suffix are reserved for future use
-and standardization by Kubernetes. This could be used to describe topology
-across resources from different vendors, but this is out-of-scope for now.
-
-If a driver needs to reduce resource capacity, then there is a risk that a
-claim gets allocated using that capacity while the kubelet is updating a
-NodeResourceSlice. The implementations of semantic models must handle scenarios
-where more resources are allocated than available. The kubelet plugin of a DRA
-driver ***must*** double-check that the allocated resources are still available
-when NodePrepareResource is called. If not, the pod cannot start until the
-resource comes back. Treating this as a fatal error during pod admission would
-allow us to delete the pod and trying again with a new one.
+**Note:** If a driver needs to reduce resource capacity, then there is a risk
+that a claim gets allocated using that capacity while the kubelet is updating a
+`NodeResourceSlice`. The implementations of semantic models must handle
+scenarios where more resources are allocated than available. The kubelet plugin
+of a DRA driver ***must*** double-check that the allocated resources are still
+available when NodePrepareResource is called. If not, the pod cannot start until
+the resource comes back. Treating this as a fatal error during pod admission
+would allow us to delete the pod and trying again with a new one.
 
 ### Using semantic parameters
 
@@ -454,9 +392,8 @@ metadata:
   uid: foobar-uid
 ...
 spec:
-  count: 2
   minimumRuntimeVersion: v12.0.0
-  minimumMemory: 8Gi
+  minimumMemory: 32Gi
   # "sharing" is a configuration parameter that does not
   # get translated into the selector below.
   sharing:
@@ -508,49 +445,35 @@ vendorParameters:
     uid: foobar-uid
   ...
   spec:
-    count: 2
     minimumRuntimeVersion: v12.0.0
-    minimumMemory: 8Gi
+    minimumMemory: 32Gi
     sharing:
       strategy: TimeSliced
 
 requests:
 - driverName: cards.dra.example.com
-  partitionable:
+  namedResourcesWithAttributes:
     required:
-    # Selectors are CEL expressions with access to the attributes of the sub-partition
+    # Selectors are CEL expressions with access to the attributes of the named resource
     # that is being checked for a match. Each entry here is a request for one resource.
-    # They happen to have the same selector for the example, but could also be different.
     - selector: |-
-        versions["runtimeVersion"] >= "v12.0.0" && quantities["memory"] >= "8Gi"
-    - selector: |-
-        versions["runtimeVersion"] >= "v12.0.0" && quantities["memory"] >= "8Gi"
+        attributes["runtimeVersion"] >= "v12.0.0" && attributes["memory"] >= "32Gi"
 ```
 
 The semantic is that the selector expression must evaluate to true for a
-particular sub-partition to be usable. The initial implementation will use a
-very simplistic approach for satisfying requests: it iterates over the requests
-in order and uses the first sub-partition in a depth-first search which
-matches. This locks that instance into a certain partitioning, which then
-influences whether the next request still can be satisfied. With that in mind,
-a better way to list sub-partitions would be to list the small ones first in
-the NodeResourceSlice, to avoid using a whole GPU for a claim that could have
-used a smaller sub-partition instead.
+particular named resource in `namedResourcesWithAttributes`.
 
-Eventually, this implementation will have to become smarter. It needs to
-support backtracking and scoring of possible solutions to find the best one
-which satisfies the requests. This could be extended to support finding the
-best solution for a set of pods and their claims.
+Future extensions could be added to support partioning of resources as well as a
+express constraints that must be satisfied *between* any selected resources. For
+example, selecting two cards which are on the same PCI root complex may be
+needed to get the required performance.
 
-Another future extension is to express constraints that must be satisfied for
-the selected instances. For example, selecting two cards which are on the same
-PCI root complex may be needed to get the required performance.
-
-Instead of defining a vendor CRD, DRA driver authors or administrators may also
-decide to allow users to create and reference ResourceClaimParameters directly
-in their ResourceClaim. Then the translation step from vendor CRD is not
-needed. The downside is a lack of validation of these user-created
-ResourceClaimParameters.
+Instead of defining a vendor-specific CRD, DRA driver authors (or
+administrators) could decide to allow users to create and reference
+`ResourceClaimParameters` directly within their `ResourceClaims`. This would
+avoid the translation step shown above, but at the cost of (1) providing per-
+claim configuration parameters for their requested resources, and (2) doing any
+sort of validation on the CEL expressions created by the user.
 
 Resource class parameters are supported the same way. To ensure that
 permissions can be limited to administrators, there's a separate cluster-scoped
@@ -576,17 +499,17 @@ vendorParameters:
 
 filters:
 - driverName: cards.dra.example.com
-  partitionable:
+  namedResourcesWithAttributes:
     selector: |-
-      quantities["memory"] <= "16Gi"
+      attributes["memory"] <= "16Gi"
 ```
 
 In this example, the additional selector expression limits users of this class
-to smaller sub-partitions. Together with limiting the number of claims that
-users are allowed to create for this class (see resource quotas in the core
-KEP) this can ensure that users do not consume too many resources. Allowing
-resource quotas that are based on resource attributes may be a useful future
-enhancement.
+to just the cards with less that "16Gi" of memory. Together with limiting the
+number of claims that users are allowed to create for this class (see resource
+quotas in the core KEP) this can ensure that users do not consume too many
+resources. Allowing resource quotas that are based on resource attributes may be
+a useful future enhancement.
 
 ### Communicating allocation to the DRA driver
 
@@ -597,7 +520,7 @@ at the time of allocation.
 
 All of this information gets stored in the allocation result inside the
 ResourceClaim status. For the example above, the result produced by the
-scheduler is simply the list of IDs of the selected sub-partitions:
+scheduler is simply the list of IDs of the selected named resource:
 
 ```yaml
 # Matches with the SemanticResourceHandle Go type defined below.
@@ -614,15 +537,14 @@ vendorClaimParameters:
   spec:
     count: 2
     minimumRuntimeVersion: v12.0.0
-    minimumMemory: 8Gi
+    minimumMemory: 32Gi
     sharing:
       strategy: TimeSliced
 
 nodeName: worker-1
-partitionable:
-  instances:
-  - partitionable-gpu-2/half-and-quarters/second-half/quarter-0
-  - partitionable-gpu-2/half-and-quarters/second-half/quarter-1
+namedResourcesWithAttributes:
+  resources:
+  - gpu-1
 ```
 
 ## Design Details
@@ -670,15 +592,15 @@ information about available resources. A status is not strictly needed because
 the information in the allocated claim statuses is sufficient to determine
 which of those resources are reserved for claims.
 
-However, despite the finalizer on the claims it could happen that a
-well intentioned but poorly informed user deletes a claim while it is in use. Therefore
-adding a status is a useful future extension. That status will include
-information about reserved resources (set by schedulers before allocating a
-claim) and in-use resources (set by kubelet). This then enables conflict
-resolution when multiple schedulers schedule pods to the same node because they
-would be required to set a reservation before proceeding with the
-allocation. It also enables detecting inconsistencies and taking actions to fix
-those, like deleting pods which use a deleted claim.
+However, despite the finalizer on the claims it could happen that a well
+intentioned but poorly informed user deletes a claim while it is in use.
+Therefore adding a status is a useful future extension. That status will
+include information about reserved resources (set by schedulers before
+allocating a claim) and in-use resources (set by the kubelet). This then
+enables conflict resolution when multiple schedulers schedule pods to the same
+node because they would be required to set a reservation before proceeding with
+the allocation. It also enables detecting inconsistencies and taking actions to
+fix those, like deleting pods which use a deleted claim.
 
 ```go
 type NodeResourceSliceSpec {
@@ -697,16 +619,11 @@ type NodeResourceSliceSpec {
 
 // NodeResourceModel must have one and only one field set.
 type NodeResourceModel struct {
-    Partitionable *PartitionableResources
+    NamedResourcesWithAttributes *NamedResourcesWithAttributes
 }
 
-type PartitionableResources struct {
-    CommonAttributes  []AttributeGroup
-    ResourceInstances []ResourceInstance
-}
-
-type AttributeGroup struct {
-    Name       string
+type NamedResourcesWithAttributes struct {
+    Name  string
     Attributes []Attribute
 }
 
@@ -724,18 +641,6 @@ type AttributeValue {
     String      *string
     StringSlice *[]string
     Version     *SemVersion
-}
-
-type ResourceInstance struct {
-    Name                 string
-    CommonAttributesRefs []string
-    Attributes           []Attribute
-    Partitions           []ResourceInstanceGroup // If empty, it is not partitionable
-}
-
-type ResourceInstanceGroup struct {
-    Name               string
-    ResourceInstances  []ResourceInstance
 }
 
 // A wrapper around https://pkg.go.dev/github.com/blang/semver/v4#Version which
@@ -783,22 +688,22 @@ type ResourceRequest struct {
 
 // ResourceRequestModel must have one and only one field set.
 type ResourceRequestModel struct {
-    Partitionable *PartitionableResourceRequest
+    NamedResourcesWithAttributes *NamedResourcesWithAttributesRequest
 }
 
-type PartitionableResourceRequests struct {
-    Required []PartitionableResourceRequest
-}
-
-type PartitionableResourceRequest struct {
+type NamedResourcesWithAttributesRequest struct {
     // Selector is a CEL expression which must evaluate to true if a
-    // resource instances is suitable. The language is as defined in
+    // resource is suitable. The language is as defined in
     // https://kubernetes.io/docs/reference/using-api/cel/
     //
     // In addition, for each supported attribute value type there
     // is a map that resolves to the corresponding value of the
     // instance under evaluation.
     Selector string
+}
+
+type NamedResourcesWithAttributesRequests struct {
+    Required []NamedResourcesWithAttributes
 }
 ```
 
@@ -828,11 +733,11 @@ type ResourceFilter struct {
 
 // ResourceFilterModel must have one and only one field set.
 type ResourceFilterModel struct {
-    Partitionable *PartitionableResourceFilter
+    NamedResourcesWithAttributes *NamedResourcesWithAttributesFilter
 }
 
-type PartitionableResourceFilter struct {
-    // Selector is a selector like the one in PartitionableResourceRequest. It must be
+type NamedResourcesWithAttributesFilter struct {
+    // Selector is a selector like the one in NamedResourcesWithAttributesRequest. It must be
     // true for a resource instance to be suitable for a claim using the class.
     Selector string
 }
@@ -890,25 +795,25 @@ type SemanticResourceHandle struct {
 
 // AllocationResultModel must have one and only one field set.
 type AllocationResultModel struct {
-    Partitionable *PartitionableAllocationResult
+    NamedResourcesWithAttributes *NamedResourcesWithAttributesResult
 }
 
-type PartitionableAllocationResult struct {
-    Instances []AllocatedResourceInstance
+type NamedResourcesWithAttributesResult struct {
+    Resources []AllocatedResource
 }
 
-type AllocatedResourceInstance struct {
+type AllocatedResource struct {
    ID string // A concatenation with / of the individual names.
 }
 ```
 
 ### Implementation of semantic models
 
-In the Go types above, all structs starting with `Partitionable` are part of that
-semantic model. In practice, organizing those inside their own Go package and
-then importing that package in the definition of the resource.k8s.io API will
-result in a cleaner separation at the source code level. It has no impact on
-the resulting Kubernetes API.
+In the Go types above, all structs starting with `NamedResourcesWithAttributes`
+are part of that semantic model. In practice, organizing those inside their own
+Go package and then importing that package in the definition of the
+resource.k8s.io API will result in a cleaner separation at the source code
+level. It has no impact on the resulting Kubernetes API.
 
 ### Scheduling + Allocation
 
