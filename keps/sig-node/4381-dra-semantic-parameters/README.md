@@ -922,7 +922,7 @@ node is found, the scheduler plugin updates the resource claim status as part
 of goroutine which handles pod binding.
 
 Like a normal DRA driver controller, the scheduler also sets a finalizer to
-ensure that users cannnot accidentally delete the allocated claim while a pod
+ensure that users cannot accidentally delete the allocated claim while a pod
 is about to start which depends on it. That finalizer is
 "semantic.dra.k8s.io/delete-protection".
 
