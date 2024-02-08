@@ -1,4 +1,4 @@
-title: KEP Template
+title: DRA Semantic Parameters
 kep-number: 4381
 authors:
   - "@pohly"
@@ -9,6 +9,7 @@ participating-sigs:
 status: implementable
 creation-date: 2024-01-05
 reviewers:
+  - "@johnbelamaric"
   - "@klueska"
 approvers:
   - "@alculquicondor" # SIG Scheduling

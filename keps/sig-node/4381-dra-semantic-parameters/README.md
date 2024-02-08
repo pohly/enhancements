@@ -181,7 +181,7 @@ communication with DRA drivers.
 At a high-level, this extension takes the following form:
 
 * DRA drivers publish their available resources in the form of a
-  `NodeResourceSlice` object on a node-by-node basis according to one of the
+  `NodeResourceSlice` object on a node-by-node basis according to one or more of the
   builtin "semantic models" known to Kubernetes. This object is stored in the
   API server and available to the scheduler (or Cluster Autoscaler) to query
   when a resource request comes in later on.
@@ -202,8 +202,10 @@ At a high-level, this extension takes the following form:
   schedule a pod on (as well as allocate resources from its `NodeResourceSlice`
   in the process).
 
-* Once a node is chosen and a workload is sent to it, DRA drivers are
-  responsible for injecting any allocated resources into the Pod, according to
+* Once a node is chosen and the allocation decisions made, the scheduler will
+  store the result in the API server as well as update its in-memory model of
+  available resources. DRA drivers are responsible for using this allocation
+  result to inject any allocated resource into the Pod, according to
   the resource choices made by the scheduler. This includes applying any
   configuration information attached to the vendor-specific claim parameters
   object used in the request.
@@ -219,7 +221,9 @@ each resource can be divided into a set of pre-defined partitions, each with
 their own set of unique attributes attached to them. In this way, requests for
 resources can be satisfied either by a complete resource instance or by one of
 its partitions.  This model may get enhanced in the future and/or other models
-might get added as needed.
+might get added as needed.  Each model must have clear semantics which can be
+implemented by any consuming component, such as the scheduler.
+
 
 ## Motivation
 
@@ -256,16 +260,18 @@ demonstrate the interest in a KEP within the wider Kubernetes community.
 ### Publishing node resources
 
 The kubelet publishes NodeResourceSlices to the API server with content
-provided by DRA drivers running on each node. Access control through the node
+provided by DRA drivers running on its own node. It's also responsible for
+deleting or updating stale objects. The `nodeName` field determines which
+objects each kubelet instance is responsible for. Access control through the node
 authorizer ensures that the kubelet running on one node is not allowed to
 create or modify NodeResourceSlices belonging to other nodes.
 
-NodeResourceSlices are published separately for each driver, using a version of
-the API that matches what that driver is using. This implies that the kubelet, DRA
-driver, and apiserver must all support the *same* API version. It might be
-possible to support version skew (= keeping kubelet at an older version than
-the control plane and the DRA drivers) in the future, but currently this is out
-of scope.
+NodeResourceSlices are published separately for each driver, using the version
+of the resource.k8s.io API supported by kubelet. That version then also is used
+in the gRPC interface between kubelet and the DRA drivers which provide the
+content for those objects. It might be possible to support version skew (=
+keeping kubelet at an older version than the control plane and the DRA drivers)
+in the future, but currently this is out of scope.
 
 Embedded inside a NodeResourceSlice is the representation of the resources
 managed by a driver. With the "semantic model" of `PartitionableResources` this
@@ -287,6 +293,19 @@ be placed under the `partitionable` field in the `NodeResourceSlice` object. As
 we add more "semantic models" in the future, *alternate* fields will be added
 at the same level as `partitionable`, and driver implementors will be able to
 choose which one they want to use to represent their resources.
+
+If a new model is added to the schema but clients are not updated,
+they'll encounter an object with no information from any known semantic model
+when they serialize into their known version of a NodeResourceSlice. This tells
+them that they cannot handle the object because the API was extended.
+
+Drivers can use different semantic models by publishing multiple
+NodeResourceSlice objects, as long as each model represents a distinct set of
+resources. Whether the information about resources of one particular semantic
+model must fit into one NodeResourceSlice object or can be distributed across
+many depends on the semantic model and how it describes resources. The size of
+each object is a hard limit that must be taken into account when designing a
+semantic model and preparing NodeResourceSlice objects.
 
 Below is an example of a driver that provides two discrete GPU cards using the
 `partitionable` model. The first card can only be used as a whole. The second
@@ -380,12 +399,6 @@ spec:
             - name: quarter-0
             - name: quarter-1
 ```
-
-As mentioned previously, exactly one semantic model must be used by a given
-driver. If a new model is added to the schema but clients are not updated,
-they'll encounter an object with no information from any known semantic model
-when they serialize into their known version of a NodeResourceSlice. This tells
-them that they cannot handle the object because the API was extended.
 
 Compared to labels, attributes in this model have values of exactly one
 type. As described later on, these attributes get used in CEL expressions that
@@ -482,6 +495,11 @@ vendorParameters:
   # parameters down to the kubelet plugin. In this case, the vendor
   # driver simply copied the entire CR. It could also be some
   # separate, smaller configuration type.
+  #
+  # Beware that ResourceClaimParameters have separate RBAC rules than
+  # the vendor CRD, so information included here may get visible
+  # to more users than the original CRD. Both objects are in the same
+  # namespace.
   kind: CardParameters
   apiVersion: dra.example.com/v1alpha1
   metadata:
@@ -500,14 +518,12 @@ requests:
 - driverName: cards.dra.example.com
   partitionable:
     required:
-    - name: selected-gpu-0
-      # A CEL expression with access to the attributes of the sub-partition
-      # that is being checked for a match.
-      selector: |-
+    # Selectors are CEL expressions with access to the attributes of the sub-partition
+    # that is being checked for a match. Each entry here is a request for one resource.
+    # They happen to have the same selector for the example, but could also be different.
+    - selector: |-
         versions["runtimeVersion"] >= "v12.0.0" && quantities["memory"] >= "8Gi"
-    - name: selected-gpu-1
-      # Same as above in this example, but could also be different.
-      selector: |-
+    - selector: |-
         versions["runtimeVersion"] >= "v12.0.0" && quantities["memory"] >= "8Gi"
 ```
 
@@ -568,7 +584,7 @@ filters:
 In this example, the additional selector expression limits users of this class
 to smaller sub-partitions. Together with limiting the number of claims that
 users are allowed to create for this class (see resource quotas in the core
-KEP) this can ensure that users do not consume too much resources. Allowing
+KEP) this can ensure that users do not consume too many resources. Allowing
 resource quotas that are based on resource attributes may be a useful future
 enhancement.
 
@@ -576,7 +592,10 @@ enhancement.
 
 The scheduler decides which resources to use for a claim and how much of
 them. It also needs to pass through the opaque vendor parameters, if there are
-any. All of this information gets stored in the allocation result inside the
+any. This accurately captures the configuration parameters as they were set
+at the time of allocation.
+
+All of this information gets stored in the allocation result inside the
 ResourceClaim status. For the example above, the result produced by the
 scheduler is simply the list of IDs of the selected sub-partitions:
 
@@ -652,7 +671,7 @@ the information in the allocated claim statuses is sufficient to determine
 which of those resources are reserved for claims.
 
 However, despite the finalizer on the claims it could happen that a
-sufficiently determined user deletes a claim while it is in use. Therefore
+well intentioned but poorly informed user deletes a claim while it is in use. Therefore
 adding a status is a useful future extension. That status will include
 information about reserved resources (set by schedulers before allocating a
 claim) and in-use resources (set by kubelet). This then enables conflict
@@ -772,10 +791,6 @@ type PartitionableResourceRequests struct {
 }
 
 type PartitionableResourceRequest struct {
-    // The name is not used right now. It might get used in the future to define
-    // cross-request constraints.
-    Name string
-
     // Selector is a CEL expression which must evaluate to true if a
     // resource instances is suitable. The language is as defined in
     // https://kubernetes.io/docs/reference/using-api/cel/
@@ -846,7 +861,7 @@ type ResourceHandle struct {
     // The maximum size of this field is 16KiB. This may get increased in the
     // future, but not reduced.
     // +optional
-    Data string
+    Data *string
 
     // If SemanticData is set, then it needs to be used instead of Data.
     SemanticData *SemanticResourceHandle
@@ -933,11 +948,6 @@ with immediate allocation remain allocated when no longer in use.
 
 ### Simulation with CA
 
-**Note**: this section outlines one potential solution for Cluster Autoscaler.
-During code review it will be decided whether the actual implement is done like
-this. Other autoscalers will have to implement a similar logic if they don't
-use the in-tree dynamic resourceclaim scheduler plugin.
-
 The usual call sequence of a scheduler plugin when used in the scheduler is
 at program startup:
 - instantiate plugin
@@ -949,6 +959,8 @@ For each new pod:
 For each pod that is ready to be scheduled, one pod at a time:
 - PreFilter, Filter, etc.
 
+Scheduling a pod gets finalized with:
+- Reserve, PreBind, Bind
 
 CA works a bit differently. It identifies all pending pods,
 takes a snapshot of the current cluster state, and then simulates the effect
@@ -959,66 +971,20 @@ points (Reserve, Bind) are not used. Plugins which modify the cluster state
 therefore need a different way of recording the result of scheduling
 a pod onto a node.
 
-This is done through a new `ClusterAutoScalerPlugin` interface defined in
-`k/k/pkg/scheduler/framework` that is implemented by the dynamic resource
-plugin:
+One option for this is to add a new optional plugin interface that is
+implemented by the dynamic resource plugin. Through that interface the
+autoscaler can then inform the plugin about events like starting simulation,
+binding pods, and adding new nodes. With this approach, the autoscaler doesn't
+need to know what the persistent state of each plugin is.
 
-```go
-type ClusterAutoScalerPlugin interface {
-    Plugin
-    // StartSimulation is called when the cluster autoscaler begins
-    // a simulation.
-    StartSimulation(ctx context.Context, state *CycleState) *Status
+Another option is to extend the state that the autoscaler keeps for
+plugins. The plugin then shouldn't need to know that it runs inside the
+autoscaler. This implies that the autoscaler will have to call Reserve and
+PreBind as that is where the state gets updated.
 
-    // SimulateAddNode is called when the cluster autoscaler adds a new fictional node.
-    // It's the job of the autoscaler to provide the NodeResourceSlices for
-    // that node. The plugin adapts its internal model of available resources
-    // accordingly.
-    SimulateAddNode(ctx context.Context, state *CycleState, nodeInfo *NodeInfo, resources []resource.NodeResourceSlice) *Status
-
-    // SimulateRemoveNode is called when the cluster autoscaler removes a real or fictional node.
-    // The plugin adapts its internal model of available resources accordingly.
-    // Pods using resources on the node must be evicted via SimulateEvictPod first,
-    // otherwise this call fails.
-    SimulateRemoveNode(ctx context.Context, state *CycleState, nodeInfo *NodeInfo) *Status
-
-    // SimulateBindPod is called when the cluster autoscaler decided to schedule
-    // a pod onto a certain node.
-    SimulateBindPod(ctx context.Context, state *CycleState, pod *v1.Pod, nodeInfo *NodeInfo) *Status
-
-    // SimulateEvictPod is called when the cluster autoscaler simulates removal
-    // of a node. All claims used only by this pod should be considered deallocated,
-    // to enable starting the same pod elsewhere.
-    SimulateEvictPod(ctx context.Context, state *CycleState, pod *v1.Pod, nodeName string) *Status
-}
-```
-
-Cluster autoscaler will at program startup:
-- instantiate plugin, with real informer factory and no Kubernetes client
-- start informers
-
-At the start of a simulation:
-- call `StartSimulation` with a clean cycle state
-
-For each pending pod:
-- call PreFilter and Filter with the same cycle state that
-  was passed to `StartSimulation`
-- call `SimulateBindPod` and/or `SimulateEvictPod` with the same cycle state that
-  was passed to StartSimulation (i.e. *not* the one which was modified
-  by PreFilter or Filter) to indicate that a pod is being scheduled onto a node
-  respectively evicted as part of the simulation
-
-The dynamic resource plugin will:
-- Take a snapshot of all relevant cluster state as part of `StartSimulation`
-  and store it in the cycle state. This signals to the other extension
-  points that the plugin is being used as part of autoscaling.
-- In `PreFilter` and `Filter` use the cluster snapshot to make decisions
-  instead of the normal "live" cluster state.
-- In `SimulateBindPod` and `SimulateEvictPod` update the snapshot in the cycle state:
-  claims get allocated when first used resp. deallocated when they become unused.
-
-Node addition and removal has the corresponding effect on the current state.
-
+Which of these options is chosen will be decided during the implementation
+phase. Autoscalers which don't use the in-tree scheduler plugin will have
+to implement a similar logic.
 
 ### Test Plan
 
@@ -1137,9 +1103,18 @@ skew are less likely to occur.
 
 ###### Does enabling the feature change any default behavior?
 
+No.
+
 ###### Can the feature be disabled once it has been enabled (i.e. can we roll back the enablement)?
 
+Yes. Applications that were already deployed and are running will continue to
+work, but they will stop working when containers get restarted because those
+restarted containers won't have the additional resources.
+
 ###### What happens if we reenable the feature if it was previously rolled back?
+
+Pods might have been scheduled without handling resources. Those Pods must be
+deleted to ensure that the re-created Pods will get scheduled properly.
 
 ###### Are there any tests for feature enablement/disablement?
 
@@ -1155,6 +1130,10 @@ feature gate after having objects written with the new field) are also critical.
 You can take a look at one potential example of such test in:
 https://github.com/kubernetes/kubernetes/pull/97058/files#diff-7826f7adbc1996a05ab52e3f5f02429e94b68ce6bce0dc534d1be636154fded3R246-R282
 -->
+
+Tests for apiserver will cover disabling the feature. This primarily matters
+for the extended PodSpec: the new fields must be preserved during updates even
+when the feature is disabled.
 
 ### Rollout, Upgrade and Rollback Planning
 
@@ -1214,14 +1193,7 @@ logs or events for this purpose.
 
 Metrics in kube-scheduler (names to be decided):
 - number of classes using semantic parameters
-- number of claim parameter types:
-  - total
-  - which have been resolved to a resource in the apiserver
 - number of claims which currently are allocated with semantic parameters
-
-If not all parameters types can be resolved to a resource, then the
-installation of one or more DRA driver is incomplete (class references unknown
-resources).
 
 ###### How can someone using this feature know that it is working for their instance?
 
