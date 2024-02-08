@@ -59,7 +59,7 @@ should be approved by the remaining approvers and/or the owning SIG (or
 SIG Architecture for cross-cutting KEPs).
 -->
 
-# KEP-4381: Semantic Parameters for Dynamic Resource Allocation
+# [KEP-4381](https://github.com/kubernetes/enhancements/issues/4381): Semantic Parameters for Dynamic Resource Allocation
 
 <!-- toc -->
 - [Release Signoff Checklist](#release-signoff-checklist)
