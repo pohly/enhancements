@@ -332,9 +332,9 @@ spec:
     - name: UUID
       string: GPU-ceea231c-4257-7af7-6726-efcb8fc2ace9
     - name: driverVersion
-      string: 1.2.3
+      version: 1.2.3
     - name: runtimeVersion
-      string: 11.1.42
+      version: 11.1.42
     - name: memory
       quantity: 16Gi
     - name: productName:
@@ -344,9 +344,9 @@ spec:
     - name: UUID
       string: GPU-6aa0af9e-a2be-88c8-d2b3-2240d25318d7
     - name: driverVersion
-      string: 1.2.3
+      version: 1.2.3
     - name: runtimeVersion
-      string: 11.1.42
+      version: 11.1.42
     - name: memory
       quantity: 32Gi
     - name: productName:
